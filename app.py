@@ -11,8 +11,10 @@ from flask import Flask, jsonify, render_template, request
 app = Flask(__name__, template_folder="templates")
 API_BASE = "https://api.clickup.com/api/v2"
 STATUS_INATIVOS = {
-    "cancelado", "cancelled", "canceled", "finalizado", "closed",
-    "done", "concluido", "concluído", "complete", "completed",
+    # Demandas encerradas não fazem parte do acompanhamento de demandas em aberto.
+    "cancelado", "cancelada", "cancelados", "canceladas", "cancelled", "canceled",
+    "finalizado", "finalizada", "finalizados", "finalizadas", "closed",
+    "done", "concluido", "concluida", "concluídos", "concluídas", "complete", "completed",
 }
 REQUEST_TIMEOUT = 25
 CACHE_TTL_SECONDS = 300
@@ -111,7 +113,11 @@ def buscar_tarefas_clickup():
         for task in tasks:
             status_obj = task.get("status") or {}
             status = status_obj.get("status", "") if isinstance(status_obj, dict) else str(status_obj)
-            if status.lower().strip() in STATUS_INATIVOS:
+            status_normalizado = status.lower().strip()
+            # Também trata variações de gênero/número e status que contenham o termo.
+            if status_normalizado in STATUS_INATIVOS or any(
+                termo in status_normalizado for termo in ("cancelad", "cancelled", "canceled", "finalizad", "conclu", "complet", "closed", "done")
+            ):
                 continue
 
             date_created_ms = task.get("date_created")
