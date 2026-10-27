@@ -1,1 +1,137 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Dashboard ClickUp - Tarefas Críticas</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans p-4 md:p-6">
+  <main class="max-w-7xl mx-auto space-y-6">
+    <header class="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+      <div>
+        <h1 class="text-2xl font-bold text-white">📊 Monitor de Gargalos - ClickUp</h1>
+        <p class="text-gray-400 text-sm mt-1">Acompanhamento de tarefas abertas há mais de 100 dias</p>
+        <p id="ultimaAtualizacao" class="text-gray-500 text-xs mt-2">Carregando dados do ClickUp…</p>
+      </div>
+      <button id="atualizar" type="button" class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition">Atualizar dados</button>
+    </header>
 
+    <div id="mensagem" role="status" aria-live="polite" class="hidden rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm"></div>
+
+    <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Total de Tarefas Críticas</p><h2 id="kpiTotal" class="text-3xl font-bold text-blue-400 mt-1">—</h2></div>
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Média de Dias Aberta</p><h2 id="kpiMedia" class="text-3xl font-bold text-yellow-400 mt-1">—</h2></div>
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Tarefa Mais Antiga</p><h2 id="kpiAntiga" class="text-3xl font-bold text-red-400 mt-1">—</h2></div>
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Responsáveis Envolvidos</p><h2 id="kpiResponsaveis" class="text-3xl font-bold text-green-400 mt-1">—</h2></div>
+    </section>
+
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><h2 class="text-lg font-semibold mb-4 text-gray-200">Distribuição por Espaço / Projeto</h2><div class="relative h-72"><canvas id="graficoEspacos"></canvas></div></div>
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><h2 class="text-lg font-semibold mb-4 text-gray-200">Top Responsáveis com Pendências</h2><div class="relative h-72"><canvas id="graficoResponsaveis"></canvas></div></div>
+    </section>
+
+    <section class="bg-gray-800 rounded-xl border border-gray-700 shadow overflow-hidden">
+      <div class="p-5 border-b border-gray-700"><h2 class="text-lg font-semibold text-gray-200">Detalhamento das Tarefas</h2><p class="text-gray-400 text-sm mt-1">Somente tarefas com mais de 100 dias em aberto.</p></div>
+      <div class="overflow-x-auto"><table class="w-full text-left border-collapse text-sm"><thead><tr class="bg-gray-700 text-gray-300 uppercase text-xs"><th class="p-3">ID</th><th class="p-3">Nome da Tarefa</th><th class="p-3">Status</th><th class="p-3">Dias Aberta</th><th class="p-3">Responsável</th><th class="p-3">Ação</th></tr></thead><tbody id="tabelaCorpo" class="divide-y divide-gray-700"><tr><td colspan="6" class="p-4 text-center text-gray-400">Carregando…</td></tr></tbody></table></div>
+    </section>
+    <footer class="text-xs text-gray-500 text-center">Dashboard ClickUp · Dados atualizados sob demanda</footer>
+  </main>
+<script>
+  let chartEspacos = null;
+  let chartResponsaveis = null;
+  const el = (id) => document.getElementById(id);
+
+  function mostrarMensagem(texto, erro = false) {
+    const box = el('mensagem');
+    box.textContent = texto;
+    box.className = `rounded-lg border p-4 text-sm ${erro ? 'border-red-700 bg-red-950 text-red-200' : 'border-gray-700 bg-gray-800 text-gray-300'}`;
+  }
+  function ocultarMensagem() { el('mensagem').className = 'hidden'; }
+
+  function atualizarKpis(criticas) {
+    el('kpiTotal').textContent = criticas.length;
+    const soma = criticas.reduce((acc, t) => acc + Number(t.dias || 0), 0);
+    el('kpiMedia').textContent = criticas.length ? `${Math.round(soma / criticas.length)} dias` : '0 dias';
+    el('kpiAntiga').textContent = `${criticas.length ? Math.max(...criticas.map(t => Number(t.dias || 0))) : 0} dias`;
+    el('kpiResponsaveis').textContent = new Set(criticas.map(t => t.responsavel || 'Não atribuído')).size;
+  }
+
+  function preencherTabela(criticas) {
+    const tbody = el('tabelaCorpo');
+    tbody.replaceChildren();
+    if (!criticas.length) {
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = 6; td.className = 'p-4 text-center text-gray-400'; td.textContent = 'Nenhuma tarefa com mais de 100 dias em aberto.';
+      tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    criticas.sort((a, b) => Number(b.dias) - Number(a.dias));
+    for (const task of criticas) {
+      const tr = document.createElement('tr'); tr.className = 'hover:bg-gray-700 transition';
+      const values = [task.id, task.name, task.status, `${task.dias} dias`, task.responsavel];
+      values.forEach((value, index) => {
+        const td = document.createElement('td'); td.className = 'p-3'; td.textContent = value ?? '';
+        if (index === 0) td.classList.add('font-mono', 'text-blue-400');
+        if (index === 1) td.classList.add('font-medium', 'text-white');
+        if (index === 2) { const badge = document.createElement('span'); badge.className = 'bg-yellow-900 text-yellow-300 px-2 py-1 rounded text-xs'; badge.textContent = value ?? ''; td.replaceChildren(badge); }
+        if (index === 3) td.classList.add('font-bold', 'text-red-400');
+        if (index === 4) td.classList.add('text-gray-300');
+        tr.appendChild(td);
+      });
+      const action = document.createElement('td'); action.className = 'p-3';
+      const link = document.createElement('a'); link.textContent = 'Ver no ClickUp'; link.className = 'text-blue-400 hover:underline';
+      try {
+        const url = new URL(task.url || '#');
+        if (url.protocol === 'https:' && url.hostname === 'app.clickup.com') {
+          link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        } else { link.textContent = 'Link indisponível'; link.className = 'text-gray-500'; }
+      } catch (_) { link.textContent = 'Link indisponível'; link.className = 'text-gray-500'; }
+      action.appendChild(link); tr.appendChild(action); tbody.appendChild(tr);
+    }
+  }
+
+  function renderizarGraficos(espacos, responsaveis) {
+    if (chartEspacos) chartEspacos.destroy();
+    if (chartResponsaveis) chartResponsaveis.destroy();
+    chartEspacos = new Chart(el('graficoEspacos').getContext('2d'), {
+      type: 'bar', data: { labels: Object.keys(espacos), datasets: [{ label: 'Tarefas por Espaço', data: Object.values(espacos), backgroundColor: '#3b82f6' }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#d1d5db' } }, y: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 } } } }
+    });
+    chartResponsaveis = new Chart(el('graficoResponsaveis').getContext('2d'), {
+      type: 'doughnut', data: { labels: Object.keys(responsaveis), datasets: [{ data: Object.values(responsaveis), backgroundColor: ['#ef4444', '#f59e0b', '#10b981', '#6366f1', '#ec4899', '#06b6d4', '#8b5cf6'] }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#d1d5db' } } } }
+    });
+  }
+
+  function processarDashboard(tasks) {
+    const criticas = tasks.filter(t => Number(t.dias) > 100);
+    atualizarKpis(criticas); preencherTabela(criticas);
+    const espacos = {}; const responsaveis = {};
+    criticas.forEach(t => { const s = t.espaco || 'Geral'; const r = t.responsavel || 'Não atribuído'; espacos[s] = (espacos[s] || 0) + 1; responsaveis[r] = (responsaveis[r] || 0) + 1; });
+    renderizarGraficos(espacos, responsaveis);
+  }
+
+  async function carregarDados() {
+    const btn = el('atualizar'); btn.disabled = true; btn.textContent = 'Atualizando…';
+    ocultarMensagem();
+    try {
+      const response = await fetch('/api/tasks', { cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Não foi possível carregar os dados.');
+      processarDashboard(payload.tasks || []);
+      const data = payload.updated_at ? new Date(payload.updated_at) : new Date();
+      el('ultimaAtualizacao').textContent = `Última atualização: ${data.toLocaleString('pt-BR')}`;
+      mostrarMensagem(`${(payload.tasks || []).length} tarefas ativas consultadas no ClickUp.`);
+    } catch (error) {
+      mostrarMensagem(error.message || 'Erro ao carregar dados. Tente novamente.', true);
+      el('tabelaCorpo').replaceChildren();
+      const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 6; td.className = 'p-4 text-center text-red-300'; td.textContent = 'Não foi possível carregar as tarefas.'; tr.appendChild(td); el('tabelaCorpo').appendChild(tr);
+    } finally { btn.disabled = false; btn.textContent = 'Atualizar dados'; }
+  }
+  el('atualizar').addEventListener('click', carregarDados);
+  carregarDados();
+</script>
+</body>
+</html>
