@@ -9,7 +9,10 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     html { color-scheme: dark; }
-    .table-scroll { max-height: 470px; overflow: auto; }
+    .table-scroll { max-height: 470px; overflow: auto; overscroll-behavior: contain; }
+    .table-scroll table { min-width: 1450px; width: max-content; }
+    .table-scroll th, .table-scroll td { white-space: nowrap; }
+    .table-scroll td:nth-child(2) { min-width: 360px; white-space: normal; }
     .table-scroll thead th { position: sticky; top: 0; z-index: 5; }
     .sort-button { display: inline-flex; align-items: center; gap: .35rem; text-align: left; }
     .filter-input { width: 100%; min-width: 90px; border: 1px solid #4b5563; background: #111827; color: #f3f4f6; border-radius: .375rem; padding: .45rem .55rem; }
@@ -47,16 +50,23 @@
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h2 class="text-lg font-semibold text-gray-200">Top 10 responsáveis com pendências</h2>
-          <span class="text-xs text-gray-400">Ordenado por quantidade</span>
+          <span class="text-xs text-gray-400">Clique em uma barra para ver as tarefas</span>
         </div>
         <div class="relative h-80"><canvas id="graficoResponsaveis" aria-label="Gráfico de barras dos dez responsáveis com mais tarefas"></canvas></div>
+      </div>
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0 xl:col-span-2">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h2 class="text-lg font-semibold text-gray-200">Tarefas críticas por Status</h2>
+          <span class="text-xs text-gray-400">Clique em um status para ver as tarefas correspondentes</span>
+        </div>
+        <div class="relative h-72"><canvas id="graficoStatus" aria-label="Gráfico de barras de tarefas críticas por status"></canvas></div>
       </div>
     </section>
 
     <section class="bg-gray-800 rounded-xl border border-gray-700 shadow overflow-hidden">
       <div class="p-5 border-b border-gray-700 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <div>
-          <h2 class="text-lg font-semibold text-gray-200">Detalhamento das Tarefas</h2>
+          <h2 id="detalhamentoTitulo" class="text-lg font-semibold text-gray-200">Detalhamento das Tarefas</h2>
           <p class="text-gray-400 text-sm mt-1">Somente tarefas com mais de 100 dias em aberto. A lista tem rolagem própria para economizar espaço.</p>
           <p id="contadorTabela" class="text-blue-300 text-xs mt-2">Aguardando dados…</p>
         </div>
@@ -121,6 +131,7 @@
 <script>
   let chartEspacos = null;
   let chartResponsaveis = null;
+  let chartStatus = null;
   let tarefasCriticas = [];
   let sortField = 'dias';
   let sortDirection = 'desc';
@@ -230,38 +241,63 @@
     document.querySelectorAll('[data-sort-indicator]').forEach(span => span.textContent = span.dataset.sortIndicator === sortField ? (sortDirection === 'asc' ? '↑' : '↓') : '↕');
   }
 
+  function aplicarFiltroGrafico(tipo, valor) {
+    // Um clique no gráfico passa a mostrar exatamente o conjunto daquele segmento.
+    ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => { el(id).value = ''; });
+    chartSpaceFilter = '';
+    if (tipo === 'espaco') { el('filtroEspaco').value = valor; chartSpaceFilter = valor; }
+    if (tipo === 'responsavel') el('filtroResponsavel').value = valor;
+    if (tipo === 'status') el('filtroStatus').value = valor;
+    preencherTabela();
+    mostrarMensagem(`Exibindo tarefas de ${tipo === 'espaco' ? 'espaço' : tipo === 'responsavel' ? 'responsável' : 'status'}: ${valor}. Use “Limpar filtros” para voltar à lista completa.`);
+    el('detalhamentoTitulo').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   function renderizarGraficos(tasks) {
-    const espacos = new Map(); const responsaveis = new Map();
+    const espacos = new Map(); const responsaveis = new Map(); const statusMap = new Map();
     tasks.forEach(t => {
       const space = t.espaco || 'Espaço não identificado';
       const owner = t.responsavel || 'Não atribuído';
+      const status = t.status || 'Sem status';
       espacos.set(space, (espacos.get(space) || 0) + 1);
       responsaveis.set(owner, (responsaveis.get(owner) || 0) + 1);
+      statusMap.set(status, (statusMap.get(status) || 0) + 1);
     });
     const spaceRows = [...espacos.entries()].sort((a,b) => b[1] - a[1]);
     const ownerRows = [...responsaveis.entries()].sort((a,b) => b[1] - a[1]).slice(0, 10);
-    if (chartEspacos) chartEspacos.destroy();
-    if (chartResponsaveis) chartResponsaveis.destroy();
+    const statusRows = [...statusMap.entries()].sort((a,b) => b[1] - a[1]);
+    [chartEspacos, chartResponsaveis, chartStatus].forEach(chart => { if (chart) chart.destroy(); });
 
+    const commonScales = {
+      x: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 }, grid: { color: '#374151' } },
+      y: { ticks: { color: '#d1d5db', autoSkip: false }, grid: { display: false } }
+    };
+    const commonPlugins = { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw} tarefas` } } };
     chartEspacos = new Chart(el('graficoEspacos').getContext('2d'), {
       type: 'bar',
       data: { labels: spaceRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: spaceRows.map(x => x[1]), backgroundColor: '#3b82f6', borderRadius: 4 }] },
-      options: {
-        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => { if (!elements.length) return; const clicked = spaceRows[elements[0].index]?.[0] || ''; chartSpaceFilter = chartSpaceFilter === clicked ? '' : clicked; el('filtroEspaco').value = chartSpaceFilter; preencherTabela(); mostrarMensagem(chartSpaceFilter ? `Filtro aplicado: ${chartSpaceFilter}. Clique novamente na barra ou limpe os filtros para remover.` : 'Filtro por espaço removido.'); },
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw} tarefas` } } },
-        scales: { x: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 }, grid: { color: '#374151' } }, y: { ticks: { color: '#d1d5db', autoSkip: false }, grid: { display: false } } }
-      }
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('espaco', spaceRows[elements[0].index]?.[0] || ''); },
+        plugins: commonPlugins, scales: commonScales }
     });
     chartResponsaveis = new Chart(el('graficoResponsaveis').getContext('2d'), {
       type: 'bar',
       data: { labels: ownerRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: ownerRows.map(x => x[1]), backgroundColor: '#10b981', borderRadius: 4 }] },
-      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw} tarefas` } } }, scales: { x: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 }, grid: { color: '#374151' } }, y: { ticks: { color: '#d1d5db' }, grid: { display: false } } } }
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('responsavel', ownerRows[elements[0].index]?.[0] || ''); },
+        plugins: commonPlugins, scales: commonScales }
+    });
+    chartStatus = new Chart(el('graficoStatus').getContext('2d'), {
+      type: 'bar',
+      data: { labels: statusRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: statusRows.map(x => x[1]), backgroundColor: '#a78bfa', borderRadius: 4 }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('status', statusRows[elements[0].index]?.[0] || ''); },
+        plugins: commonPlugins, scales: commonScales }
     });
   }
 
   function processarDashboard(tasks) {
-    tarefasCriticas = tasks.filter(t => Number(t.dias) > 100);
+    tarefasCriticas = tasks.filter(t => Number(t.dias) > 100 && !/cancelad|cancelled|canceled|finalizad|conclu|complet|closed|done/i.test(String(t.status || '')));
     atualizarKpis(tarefasCriticas); preencherFiltros(tarefasCriticas); renderizarGraficos(tarefasCriticas); preencherTabela();
   }
 
@@ -294,7 +330,7 @@
   }));
   el('limparFiltros').addEventListener('click', () => {
     ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => el(id).value = '');
-    chartSpaceFilter = ''; preencherTabela();
+    chartSpaceFilter = ''; preencherTabela(); ocultarMensagem();
   });
   el('atualizar').addEventListener('click', () => carregarDados(true));
   carregarDados(false);
