@@ -15,11 +15,11 @@ app = Flask(__name__, template_folder="templates")
 API_BASE = "https://api.clickup.com/api/v2"
 DIAS_MINIMOS = 100
 CONNECT_TIMEOUT = 5
-READ_TIMEOUT = 12
-MAX_RETRIES = 2
+READ_TIMEOUT = 15
+MAX_RETRIES = 3
 CACHE_TTL_SECONDS = 300
-MAX_PAGES = 10  # limite temporário para evitar buscas intermináveis
-MAX_FETCH_SECONDS = 75  # orçamento máximo aproximado para a paginação
+# Não limitamos a quantidade de páginas: a busca só termina quando o ClickUp
+# devolver uma página vazia. A atualização roda em segundo plano.
 
 STATUS_INATIVOS = {
     "cancelado", "cancelada", "cancelados", "canceladas",
@@ -53,9 +53,8 @@ def _safe_json(response):
 
 
 def _get_json(session, url, params=None):
-    """Repete falhas transitórias de rede, HTTP 429 e HTTP 5xx."""
+    """Consulta a API com timeout por página e novas tentativas para falhas transitórias."""
     last_error = None
-
     for attempt in range(MAX_RETRIES):
         try:
             response = session.get(
@@ -63,34 +62,30 @@ def _get_json(session, url, params=None):
                 params=params,
                 timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             )
-
             transient = response.status_code == 429 or 500 <= response.status_code <= 599
             if transient and attempt < MAX_RETRIES - 1:
                 retry_after = response.headers.get("Retry-After")
                 try:
-                    delay = min(8.0, max(1.0, float(retry_after))) if retry_after else 2 ** attempt
+                    delay = min(30.0, max(1.0, float(retry_after))) if retry_after else min(8.0, 2 ** attempt)
                 except (TypeError, ValueError):
-                    delay = 2 ** attempt
+                    delay = min(8.0, 2 ** attempt)
                 app.logger.warning(
                     "ClickUp respondeu HTTP %s; nova tentativa em %.1fs (%s/%s).",
-                    response.status_code, delay, attempt + 1, MAX_RETRIES
+                    response.status_code, delay, attempt + 1, MAX_RETRIES,
                 )
                 time.sleep(delay)
                 continue
-
             return _safe_json(response)
-
         except (requests.Timeout, requests.ConnectionError) as exc:
             last_error = exc
             if attempt >= MAX_RETRIES - 1:
                 raise
-            delay = 2 ** attempt
+            delay = min(8.0, 2 ** attempt)
             app.logger.warning(
                 "Falha temporária de rede com ClickUp (%s); nova tentativa em %ss (%s/%s).",
-                type(exc).__name__, delay, attempt + 1, MAX_RETRIES
+                type(exc).__name__, delay, attempt + 1, MAX_RETRIES,
             )
             time.sleep(delay)
-
     if last_error:
         raise last_error
     raise requests.RequestException("Não foi possível consultar a API do ClickUp.")
@@ -135,206 +130,174 @@ def _is_inactive_status(status):
 
 
 def buscar_tarefas_clickup():
-    """Busca tarefas abertas criadas há mais de DIAS_MINIMOS dias."""
+    """Busca TODAS as páginas de tarefas abertas criadas há mais de 100 dias.
+
+    A função só retorna quando encontra uma página vazia. Se qualquer página
+    falhar ou a API repetir a mesma página, lança erro e não publica resultados
+    parciais no cache.
+    """
     token = (os.getenv("CLICKUP_API_TOKEN") or "").strip()
     if not token:
-        raise RuntimeError(
-            "O serviço ainda não foi configurado com CLICKUP_API_TOKEN no Render."
-        )
+        raise RuntimeError("O serviço ainda não foi configurado com CLICKUP_API_TOKEN no Render.")
 
     session = requests.Session()
-    session.headers.update({
-        "Authorization": token,
-        "Accept": "application/json",
-    })
-
+    session.headers.update({"Authorization": token, "Accept": "application/json"})
     try:
         teams = _get_json(session, f"{API_BASE}/team").get("teams", [])
         if not teams:
             raise RuntimeError("Nenhum workspace do ClickUp foi encontrado para este token.")
-
         team_id = (os.getenv("CLICKUP_TEAM_ID") or "").strip()
         team = next((t for t in teams if str(t.get("id")) == team_id), None) if team_id else teams[0]
         if not team:
-            raise RuntimeError(
-                "CLICKUP_TEAM_ID não corresponde a um workspace disponível para o token."
-            )
+            raise RuntimeError("CLICKUP_TEAM_ID não corresponde a um workspace disponível para o token.")
 
         spaces_by_id = {}
         try:
-            spaces_payload = _get_json(
-                session,
-                f"{API_BASE}/team/{team['id']}/space",
-                {"archived": "false"},
-            )
+            spaces_payload = _get_json(session, f"{API_BASE}/team/{team['id']}/space", {"archived": "false"})
             spaces_by_id = {
                 str(space["id"]): str(space["name"])
                 for space in spaces_payload.get("spaces", [])
                 if space.get("id") is not None and space.get("name")
             }
         except (requests.RequestException, ValueError) as exc:
-            # Os nomes dos espaços são complementares; a busca de tarefas pode continuar.
-            app.logger.warning(
-                "Não foi possível carregar a lista de Spaces: %s", type(exc).__name__
-            )
+            app.logger.warning("Não foi possível carregar a lista de Spaces: %s", type(exc).__name__)
 
         now = datetime.now(timezone.utc)
         cutoff_ms = int((now - timedelta(days=DIAS_MINIMOS)).timestamp() * 1000)
         critical = []
         seen_ids = set()
-        fetch_started = time.monotonic()
+        seen_page_signatures = set()
+        page = 0
+        total_received = 0
+        app.logger.info("Iniciando busca completa de tarefas antigas no workspace %s.", team.get("id"))
 
-        for page in range(MAX_PAGES):
-            if time.monotonic() - fetch_started >= MAX_FETCH_SECONDS:
-                app.logger.warning(
-                    "Busca interrompida após %ss para evitar timeout; resultados podem estar incompletos.",
-                    MAX_FETCH_SECONDS,
-                )
-                break
-
-            try:
-                payload = _get_json(
-                    session,
-                    f"{API_BASE}/team/{team['id']}/task",
-                    {
-                        "page": page,
-                        "subtasks": "true",
-                        "date_created_lt": cutoff_ms,
-                        "include_closed": "false",
-                    },
-                )
-            except (requests.RequestException, ValueError) as exc:
-                # Se já recebemos páginas válidas, preserva os dados coletados
-                # em vez de descartar tudo por uma falha numa página posterior.
-                if critical:
-                    app.logger.warning(
-                        "Falha ao consultar página %s do ClickUp (%s); retornando resultados parciais.",
-                        page, type(exc).__name__,
-                    )
-                    break
-                raise
-
+        while True:
+            payload = _get_json(
+                session,
+                f"{API_BASE}/team/{team['id']}/task",
+                {
+                    "page": page,
+                    "subtasks": "true",
+                    "date_created_lt": cutoff_ms,
+                    "include_closed": "false",
+                },
+            )
             tasks = payload.get("tasks", [])
             if not tasks:
+                app.logger.info(
+                    "Busca completa finalizada: %s tarefas recebidas, %s tarefas críticas após filtros, %s páginas.",
+                    total_received, len(critical), page,
+                )
                 break
+
+            # Protege contra uma API que, por erro, devolva indefinidamente a mesma página.
+            page_ids = [str(t.get("id") or t.get("custom_id") or "") for t in tasks]
+            signature = tuple(page_ids)
+            if signature in seen_page_signatures:
+                raise RuntimeError(
+                    f"A API do ClickUp repetiu a página {page}; atualização cancelada para não publicar dados incompletos."
+                )
+            seen_page_signatures.add(signature)
+            total_received += len(tasks)
 
             for task in tasks:
                 task_id = str(task.get("id") or task.get("custom_id") or "")
-                # Evita duplicação caso a API devolva tarefas repetidas entre páginas.
                 if task_id and task_id in seen_ids:
                     continue
                 if task_id:
                     seen_ids.add(task_id)
 
                 status_obj = task.get("status") or {}
-                status = (
-                    status_obj.get("status", "")
-                    if isinstance(status_obj, dict)
-                    else str(status_obj)
-                )
+                status = status_obj.get("status", "") if isinstance(status_obj, dict) else str(status_obj)
                 if _is_inactive_status(status):
                     continue
-
                 created_ms = task.get("date_created")
                 if created_ms in (None, ""):
                     continue
                 try:
-                    created = datetime.fromtimestamp(
-                        int(created_ms) / 1000, tz=timezone.utc
-                    )
+                    created = datetime.fromtimestamp(int(created_ms) / 1000, tz=timezone.utc)
                 except (TypeError, ValueError, OSError, OverflowError):
                     continue
-
                 days = max(0, (now - created).days)
                 if days <= DIAS_MINIMOS:
                     continue
 
-                assignees = task.get("assignees") or []
                 responsible_names = []
-                for assignee in assignees:
+                for assignee in (task.get("assignees") or []):
                     if isinstance(assignee, dict):
-                        name = (
-                            assignee.get("username")
-                            or assignee.get("email")
-                            or assignee.get("initials")
-                        )
+                        name = assignee.get("username") or assignee.get("email") or assignee.get("initials")
                         if name:
                             responsible_names.append(str(name))
-                responsible = ", ".join(responsible_names) or "Não atribuído"
-
                 critical.append({
                     "id": str(task.get("custom_id") or task.get("id") or ""),
                     "name": str(task.get("name") or "Sem título"),
                     "status": status or "Sem status",
                     "dias": days,
                     "criacao": created.strftime("%Y-%m-%d"),
-                    "responsavel": responsible,
+                    "responsavel": ", ".join(responsible_names) or "Não atribuído",
                     "espaco": _space_name(task, spaces_by_id),
                     "url": str(task.get("url") or "#"),
                 })
-        else:
-            app.logger.warning(
-                "A consulta atingiu o limite de %s páginas; resultados podem estar incompletos.",
-                MAX_PAGES
-            )
-
+            page += 1
+            if page % 10 == 0:
+                app.logger.info("Busca ClickUp em andamento: %s páginas consultadas; %s tarefas recebidas.", page, total_received)
         return critical
     finally:
         session.close()
 
 
-def obter_tarefas_cache(force_refresh=False):
-    """
-    Retorna cache recente quando disponível.
-    Uma trava separada evita consultas simultâneas; o lock do cache nunca fica
-    preso durante a chamada de rede. Em falha, usa a última consulta bem-sucedida.
-    """
-    now = time.time()
-    with _cache_lock:
-        has_cache = _cache["tasks"] is not None
-        fresh = has_cache and (now - _cache["at"] < CACHE_TTL_SECONDS)
-        if not force_refresh and fresh:
-            return list(_cache["tasks"]), _cache["updated_at"], True
-
-    # Só uma thread atualiza por vez. As demais podem usar o cache existente.
-    if not _refresh_lock.acquire(blocking=False):
-        with _cache_lock:
-            if _cache["tasks"] is not None:
-                return list(_cache["tasks"]), _cache["updated_at"], True
-        # Sem cache ainda: aguarda a atualização que já está em andamento.
-        with _refresh_lock:
-            with _cache_lock:
-                if _cache["tasks"] is not None:
-                    return list(_cache["tasks"]), _cache["updated_at"], True
-            # Se a primeira atualização falhou sem cache, tenta uma vez nesta thread.
-            return _buscar_e_atualizar_cache()
-
-    try:
-        return _buscar_e_atualizar_cache()
-    finally:
-        _refresh_lock.release()
-
-
-def _buscar_e_atualizar_cache():
+def _refresh_worker():
+    """Atualiza em segundo plano e só troca o cache após uma busca completa."""
+    global _refresh_thread, _refreshing, _last_refresh_error
     try:
         tasks = buscar_tarefas_clickup()
         updated_at = datetime.now(timezone.utc).isoformat()
         with _cache_lock:
             _cache.update(at=time.time(), tasks=tasks, updated_at=updated_at)
-        return list(tasks), updated_at, False
-    except Exception:
+        _last_refresh_error = None
+        app.logger.info("Cache atualizado com %s tarefas. Nenhum resultado parcial foi publicado.", len(tasks))
+    except Exception as exc:
+        _last_refresh_error = type(exc).__name__
+        app.logger.exception("Atualização completa do ClickUp falhou; cache anterior foi preservado.")
+    finally:
+        with _refresh_lock:
+            _refreshing = False
+            _refresh_thread = None
+
+
+def iniciar_atualizacao(force=False):
+    """Inicia no máximo uma atualização; retorna imediatamente ao navegador."""
+    global _refresh_thread, _refreshing, _last_refresh_error
+    with _refresh_lock:
+        now = time.time()
         with _cache_lock:
             has_cache = _cache["tasks"] is not None
-            cached_tasks = list(_cache["tasks"]) if has_cache else None
-            cached_updated_at = _cache["updated_at"]
+            fresh = has_cache and (now - _cache["at"] < CACHE_TTL_SECONDS)
+        if _refreshing:
+            return False
+        if not force and fresh:
+            return False
+        _refreshing = True
+        _last_refresh_error = None
+        _refresh_thread = threading.Thread(target=_refresh_worker, name="clickup-refresh", daemon=True)
+        _refresh_thread.start()
+        return True
 
-        if has_cache:
-            app.logger.exception(
-                "Atualização do ClickUp falhou; retornando o último cache bem-sucedido (%s).",
-                cached_updated_at,
-            )
-            return cached_tasks, cached_updated_at, True
-        raise
+
+# Estado em memória do processo. Uma reinicialização provoca nova busca completa.
+_refresh_lock = threading.Lock()
+_refreshing = False
+_refresh_thread = None
+_last_refresh_error = None
+
+
+def estado_tarefas(force_refresh=False):
+    iniciar_atualizacao(force=force_refresh)
+    with _cache_lock:
+        tasks = list(_cache["tasks"]) if _cache["tasks"] is not None else None
+        updated_at = _cache["updated_at"]
+        fresh = _cache["tasks"] is not None and (time.time() - _cache["at"] < CACHE_TTL_SECONDS)
+    return tasks, updated_at, fresh
 
 
 @app.after_request
@@ -353,37 +316,24 @@ def index():
 
 @app.get("/api/tasks")
 def api_tasks():
-    try:
-        force_refresh = request.args.get("refresh") == "1"
-        tasks, updated_at, cached = obter_tarefas_cache(force_refresh)
-        return jsonify({
-            "tasks": tasks,
-            "updated_at": updated_at,
-            "cached": cached,
-        }), 200
-
-    except requests.HTTPError as exc:
-        code = exc.response.status_code if exc.response is not None else "desconhecido"
-        app.logger.warning("ClickUp API retornou HTTP %s", code)
-        return jsonify({
-            "error": "Não foi possível consultar o ClickUp. Verifique o token e as permissões configuradas no Render."
-        }), 502
-
-    except (requests.RequestException, ValueError) as exc:
-        app.logger.warning("Falha de comunicação com ClickUp: %s", type(exc).__name__)
-        return jsonify({
-            "error": "Falha de comunicação com o ClickUp. Tente novamente em alguns instantes."
-        }), 502
-
-    except RuntimeError as exc:
-        app.logger.warning("Configuração ClickUp: %s", exc)
-        return jsonify({"error": str(exc)}), 503
-
-    except Exception:
-        app.logger.exception("Erro inesperado ao carregar tarefas do ClickUp.")
-        return jsonify({
-            "error": "Erro interno ao carregar as tarefas. Consulte os logs do servidor."
-        }), 500
+    force_refresh = request.args.get("refresh") == "1"
+    tasks, updated_at, fresh = estado_tarefas(force_refresh)
+    with _refresh_lock:
+        refreshing = _refreshing
+    payload = {
+        "tasks": tasks or [],
+        "updated_at": updated_at,
+        "cached": bool(tasks is not None),
+        "refreshing": refreshing,
+        "complete": tasks is not None,
+    }
+    if _last_refresh_error and tasks is None and not refreshing:
+        payload["error"] = (
+            "Não foi possível concluir a busca completa no ClickUp. Nenhum resultado parcial foi exibido. "
+            "Confira o token/permissões e os logs do Render e tente atualizar novamente."
+        )
+        return jsonify(payload), 502
+    return jsonify(payload), 200
 
 
 @app.post("/api/export.xlsx")
