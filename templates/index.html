@@ -303,23 +303,69 @@
   }
 
   async function carregarDados(forceRefresh = false) {
-    const btn = el('atualizar'); btn.disabled = true; btn.textContent = 'Atualizando…'; ocultarMensagem();
+    const btn = el('atualizar');
+    btn.disabled = true;
+    btn.textContent = forceRefresh ? 'Solicitando atualização…' : 'Carregando…';
+    ocultarMensagem();
+
     try {
-      const response = await fetch(`/api/tasks${forceRefresh ? '?refresh=1' : ''}`, { cache: 'no-store' });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Não foi possível carregar os dados.');
-      processarDashboard(payload.tasks || []);
+      let url = `/api/tasks${forceRefresh ? '?refresh=1' : ''}`;
+      let payload = null;
+      const deadline = Date.now() + 10 * 60 * 1000; // aguarda até 10 min pela coleta completa
+
+      while (Date.now() < deadline) {
+        const response = await fetch(url, { cache: 'no-store' });
+        payload = await response.json();
+
+        if (!response.ok) {
+          throw new Error(payload.error || 'Não foi possível carregar os dados.');
+        }
+
+        // O backend pode informar que a coleta ainda está rodando.
+        // Não mostrar [] como se fosse o resultado final.
+        if (payload.refreshing === true || payload.complete === false) {
+          btn.textContent = 'Buscando todas as tarefas…';
+          mostrarMensagem('A coleta do ClickUp ainda está em andamento. Os resultados não serão tratados como completos até a finalização.');
+          await new Promise(resolve => setTimeout(resolve, 2500));
+          url = '/api/tasks'; // não iniciar outra atualização; apenas consultar o estado
+          continue;
+        }
+
+        break;
+      }
+
+      if (!payload || payload.refreshing === true || payload.complete === false) {
+        throw new Error('A coleta ainda não terminou. Nenhum resultado parcial foi apresentado como completo; tente consultar novamente em instantes.');
+      }
+
+      if (!Array.isArray(payload.tasks)) {
+        throw new Error('A resposta do servidor não contém uma lista válida de tarefas.');
+      }
+
+      processarDashboard(payload.tasks);
       const data = payload.updated_at ? new Date(payload.updated_at) : new Date();
       el('ultimaAtualizacao').textContent = `Última atualização: ${data.toLocaleString('pt-BR')}`;
-      mostrarMensagem(`${(payload.tasks || []).length.toLocaleString('pt-BR')} tarefas críticas carregadas${payload.cached ? ' do cache' : ' do ClickUp'}.`);
+      mostrarMensagem(`${payload.tasks.length.toLocaleString('pt-BR')} tarefas recebidas${payload.cached ? ' do cache' : ' do ClickUp'}.`);
     } catch (error) {
       mostrarMensagem(error.message || 'Erro ao carregar dados. Tente novamente.', true);
-      el('tabelaCorpo').replaceChildren();
-      const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 8; td.className = 'p-4 text-center text-red-300'; td.textContent = 'Não foi possível carregar as tarefas.'; tr.appendChild(td); el('tabelaCorpo').appendChild(tr);
-    } finally { btn.disabled = false; btn.textContent = 'Atualizar dados'; }
+      // Não apagar uma tabela já carregada por uma falha transitória.
+      if (!tarefasCriticas.length) {
+        el('tabelaCorpo').replaceChildren();
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 8;
+        td.className = 'p-4 text-center text-yellow-300';
+        td.textContent = 'Aguardando uma coleta concluída do ClickUp. Ainda não é possível confirmar o total de tarefas.';
+        tr.appendChild(td);
+        el('tabelaCorpo').appendChild(tr);
+      }
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Atualizar dados';
+    }
   }
 
-  ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => {
+  ['filtroGeral' ,'filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => {
     el(id).addEventListener('input', () => { if (id === 'filtroEspaco') chartSpaceFilter = ''; preencherTabela(); });
     el(id).addEventListener('change', () => { if (id === 'filtroEspaco') chartSpaceFilter = ''; preencherTabela(); });
   });
