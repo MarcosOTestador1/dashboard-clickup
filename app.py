@@ -14,12 +14,12 @@ app = Flask(__name__, template_folder="templates")
 
 API_BASE = "https://api.clickup.com/api/v2"
 DIAS_MINIMOS = 100
-CONNECT_TIMEOUT = 4
-READ_TIMEOUT = 8
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 12
 MAX_RETRIES = 2
 CACHE_TTL_SECONDS = 300
-MAX_PAGES = 10  # limite temporário para evitar consultas excessivamente longas
-MAX_FETCH_SECONDS = 75
+MAX_PAGES = 10  # limite temporário para evitar buscas intermináveis
+MAX_FETCH_SECONDS = 75  # orçamento máximo aproximado para a paginação
 
 STATUS_INATIVOS = {
     "cancelado", "cancelada", "cancelados", "canceladas",
@@ -182,26 +182,38 @@ def buscar_tarefas_clickup():
         cutoff_ms = int((now - timedelta(days=DIAS_MINIMOS)).timestamp() * 1000)
         critical = []
         seen_ids = set()
-
         fetch_started = time.monotonic()
+
         for page in range(MAX_PAGES):
             if time.monotonic() - fetch_started >= MAX_FETCH_SECONDS:
                 app.logger.warning(
-                    "Busca interrompida após %ss para evitar timeout do servidor; resultados podem estar incompletos.",
+                    "Busca interrompida após %ss para evitar timeout; resultados podem estar incompletos.",
                     MAX_FETCH_SECONDS,
                 )
                 break
 
-            payload = _get_json(
-                session,
-                f"{API_BASE}/team/{team['id']}/task",
-                {
-                    "page": page,
-                    "subtasks": "true",
-                    "date_created_lt": cutoff_ms,
-                    "include_closed": "false",
-                },
-            )
+            try:
+                payload = _get_json(
+                    session,
+                    f"{API_BASE}/team/{team['id']}/task",
+                    {
+                        "page": page,
+                        "subtasks": "true",
+                        "date_created_lt": cutoff_ms,
+                        "include_closed": "false",
+                    },
+                )
+            except (requests.RequestException, ValueError) as exc:
+                # Se já recebemos páginas válidas, preserva os dados coletados
+                # em vez de descartar tudo por uma falha numa página posterior.
+                if critical:
+                    app.logger.warning(
+                        "Falha ao consultar página %s do ClickUp (%s); retornando resultados parciais.",
+                        page, type(exc).__name__,
+                    )
+                    break
+                raise
+
             tasks = payload.get("tasks", [])
             if not tasks:
                 break
