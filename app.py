@@ -93,7 +93,7 @@ def _is_inactive_status(status):
 
 def buscar_tarefas_clickup():
     """Busca demandas abertas com mais de 100 dias; token permanece no servidor."""
-    token = (os.getenv("CLICKUP_API_TOKEN") or "").strip()
+    token = (os.getenv("pk_112021728_1PIOTZ7FYWLL38DFDGQEKD6L3EO9XR1Y") or "").strip()
     if not token:
         raise RuntimeError("O serviço ainda não foi configurado com CLICKUP_API_TOKEN.")
     session = requests.Session()
