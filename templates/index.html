@@ -4,24 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="strict-origin-when-cross-origin">
-  <title>Dashboard ClickUp - Monitor de Gargalos</title>
+  <title>Dashboard ClickUp - Tarefas Críticas</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    html { color-scheme: dark; }
-    .table-scroll { max-height: 470px; overflow: auto; overscroll-behavior: contain; }
-    .table-scroll table { min-width: 1450px; width: max-content; }
-    .table-scroll th, .table-scroll td { white-space: nowrap; }
-    .table-scroll td:nth-child(2) { min-width: 360px; white-space: normal; }
-    .table-scroll thead th { position: sticky; top: 0; z-index: 5; }
-    .sort-button { display: inline-flex; align-items: center; gap: .35rem; text-align: left; }
-    .filter-input { width: 100%; min-width: 90px; border: 1px solid #4b5563; background: #111827; color: #f3f4f6; border-radius: .375rem; padding: .45rem .55rem; }
-    .filter-input:focus { outline: 2px solid #3b82f6; outline-offset: 1px; }
-  </style>
 </head>
-<body class="bg-gray-900 text-gray-100 font-sans p-3 md:p-6">
-  <main class="max-w-[1600px] mx-auto space-y-5">
-    <header class="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-gray-800 p-5 md:p-6 rounded-xl shadow-lg border border-gray-700">
+<body class="bg-gray-900 text-gray-100 font-sans p-4 md:p-6">
+  <main class="max-w-7xl mx-auto space-y-6">
+    <header class="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
       <div>
         <h1 class="text-2xl font-bold text-white">📊 Monitor de Gargalos - ClickUp</h1>
         <p class="text-gray-400 text-sm mt-1">Acompanhamento de tarefas abertas há mais de 100 dias</p>
@@ -39,106 +28,21 @@
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Responsáveis Envolvidos</p><h2 id="kpiResponsaveis" class="text-3xl font-bold text-green-400 mt-1">—</h2></div>
     </section>
 
-    <section class="grid grid-cols-1 xl:grid-cols-2 gap-5">
-      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0">
-        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h2 class="text-lg font-semibold text-gray-200">Tarefas críticas por Espaço</h2>
-          <span class="text-xs text-gray-400">Clique em um espaço para filtrar a tabela</span>
-        </div>
-        <div class="relative h-80"><canvas id="graficoEspacos" aria-label="Gráfico de tarefas por espaço"></canvas></div>
-      </div>
-      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0">
-        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h2 class="text-lg font-semibold text-gray-200">Top 10 responsáveis com pendências</h2>
-          <span class="text-xs text-gray-400">Clique em uma barra para ver as tarefas</span>
-        </div>
-        <div class="relative h-80"><canvas id="graficoResponsaveis" aria-label="Gráfico de barras dos dez responsáveis com mais tarefas"></canvas></div>
-      </div>
-      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0 xl:col-span-2">
-        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h2 class="text-lg font-semibold text-gray-200">Tarefas críticas por Status</h2>
-          <span class="text-xs text-gray-400">Clique em um status para ver as tarefas correspondentes</span>
-        </div>
-        <div class="relative h-72"><canvas id="graficoStatus" aria-label="Gráfico de barras de tarefas críticas por status"></canvas></div>
-      </div>
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><h2 class="text-lg font-semibold mb-4 text-gray-200">Distribuição por Espaço / Projeto</h2><div class="relative h-72"><canvas id="graficoEspacos"></canvas></div></div>
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><h2 class="text-lg font-semibold mb-4 text-gray-200">Top Responsáveis com Pendências</h2><div class="relative h-72"><canvas id="graficoResponsaveis"></canvas></div></div>
     </section>
 
     <section class="bg-gray-800 rounded-xl border border-gray-700 shadow overflow-hidden">
-      <div class="p-5 border-b border-gray-700 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
-        <div>
-          <h2 id="detalhamentoTitulo" class="text-lg font-semibold text-gray-200">Detalhamento das Tarefas</h2>
-          <p class="text-gray-400 text-sm mt-1">Somente tarefas com mais de 100 dias em aberto. A lista tem rolagem própria para economizar espaço.</p>
-          <p id="contadorTabela" class="text-blue-300 text-xs mt-2">Aguardando dados…</p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button id="exportarXlsx" type="button" class="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 px-3 py-2 rounded-lg text-sm font-medium">Exportar XLSX</button>
-          <button id="limparFiltros" type="button" class="border border-gray-600 hover:bg-gray-700 px-3 py-2 rounded-lg text-sm">Limpar filtros</button>
-        </div>
-      </div>
-
-      <div class="p-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 border-b border-gray-700">
-        <label class="text-xs text-gray-400">Pesquisa geral (todas as colunas)
-          <input id="filtroGeral" class="filter-input mt-1" type="search" placeholder="Digite ID, tarefa, status, responsável…">
-        </label>
-        <label class="text-xs text-gray-400">ID da tarefa
-          <input id="filtroId" class="filter-input mt-1" type="search" placeholder="Ex.: SRE-5663">
-        </label>
-        <label class="text-xs text-gray-400">Nome da tarefa
-          <input id="filtroNome" class="filter-input mt-1" type="search" placeholder="Pesquisar nome…">
-        </label>
-        <label class="text-xs text-gray-400">Status
-          <select id="filtroStatus" class="filter-input mt-1"><option value="">Todos os status</option></select>
-        </label>
-        <label class="text-xs text-gray-400">Responsável
-          <select id="filtroResponsavel" class="filter-input mt-1"><option value="">Todos os responsáveis</option></select>
-        </label>
-        <label class="text-xs text-gray-400">Espaço do ClickUp
-          <select id="filtroEspaco" class="filter-input mt-1"><option value="">Todos os espaços</option></select>
-        </label>
-        <label class="text-xs text-gray-400">Dias em aberto — mínimo
-          <input id="filtroDiasMin" class="filter-input mt-1" type="number" min="0" placeholder="Ex.: 100">
-        </label>
-        <label class="text-xs text-gray-400">Dias em aberto — máximo
-          <input id="filtroDiasMax" class="filter-input mt-1" type="number" min="0" placeholder="Sem limite">
-        </label>
-        <label class="text-xs text-gray-400">Criada a partir de
-          <input id="filtroCriacaoDe" class="filter-input mt-1" type="date">
-        </label>
-        <label class="text-xs text-gray-400">Criada até
-          <input id="filtroCriacaoAte" class="filter-input mt-1" type="date">
-        </label>
-      </div>
-
-      <div class="table-scroll">
-        <table class="w-full text-left border-collapse text-sm min-w-[1050px]">
-          <thead class="bg-gray-700 text-gray-200 uppercase text-xs">
-            <tr>
-              <th class="p-3"><button class="sort-button" data-sort="id">ID <span data-sort-indicator="id">↕</span></button></th>
-              <th class="p-3"><button class="sort-button" data-sort="name">Nome da tarefa <span data-sort-indicator="name">↕</span></button></th>
-              <th class="p-3"><button class="sort-button" data-sort="status">Status <span data-sort-indicator="status">↕</span></button></th>
-              <th class="p-3"><button class="sort-button" data-sort="dias">Dias aberta <span data-sort-indicator="dias">↓</span></button></th>
-              <th class="p-3"><button class="sort-button" data-sort="responsavel">Responsável <span data-sort-indicator="responsavel">↕</span></button></th>
-              <th class="p-3"><button class="sort-button" data-sort="espaco">Espaço <span data-sort-indicator="espaco">↕</span></button></th>
-              <th class="p-3"><button class="sort-button" data-sort="criacao">Data de criação <span data-sort-indicator="criacao">↕</span></button></th>
-              <th class="p-3">Ação</th>
-            </tr>
-          </thead>
-          <tbody id="tabelaCorpo" class="divide-y divide-gray-700"><tr><td colspan="8" class="p-4 text-center text-gray-400">Carregando…</td></tr></tbody>
-        </table>
-      </div>
+      <div class="p-5 border-b border-gray-700"><h2 class="text-lg font-semibold text-gray-200">Detalhamento das Tarefas</h2><p class="text-gray-400 text-sm mt-1">Somente tarefas com mais de 100 dias em aberto.</p></div>
+      <div class="overflow-x-auto"><table class="w-full text-left border-collapse text-sm"><thead><tr class="bg-gray-700 text-gray-300 uppercase text-xs"><th class="p-3">ID</th><th class="p-3">Nome da Tarefa</th><th class="p-3">Status</th><th class="p-3">Dias Aberta</th><th class="p-3">Responsável</th><th class="p-3">Ação</th></tr></thead><tbody id="tabelaCorpo" class="divide-y divide-gray-700"><tr><td colspan="6" class="p-4 text-center text-gray-400">Carregando…</td></tr></tbody></table></div>
     </section>
     <footer class="text-xs text-gray-500 text-center">Dashboard ClickUp · Dados atualizados sob demanda</footer>
   </main>
 <script>
   let chartEspacos = null;
   let chartResponsaveis = null;
-  let chartStatus = null;
-  let tarefasCriticas = [];
-  let sortField = 'dias';
-  let sortDirection = 'desc';
-  let chartSpaceFilter = '';
   const el = (id) => document.getElementById(id);
-  const norm = (value) => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').trim();
 
   function mostrarMensagem(texto, erro = false) {
     const box = el('mensagem');
@@ -147,228 +51,118 @@
   }
   function ocultarMensagem() { el('mensagem').className = 'hidden'; }
 
-  function atualizarKpis(tasks) {
-    el('kpiTotal').textContent = tasks.length.toLocaleString('pt-BR');
-    const soma = tasks.reduce((acc, t) => acc + Number(t.dias || 0), 0);
-    el('kpiMedia').textContent = `${tasks.length ? Math.round(soma / tasks.length) : 0} dias`;
-    el('kpiAntiga').textContent = `${tasks.length ? Math.max(...tasks.map(t => Number(t.dias || 0))) : 0} dias`;
-    el('kpiResponsaveis').textContent = new Set(tasks.map(t => t.responsavel || 'Não atribuído')).size.toLocaleString('pt-BR');
+  function atualizarKpis(criticas) {
+    el('kpiTotal').textContent = criticas.length;
+    const soma = criticas.reduce((acc, t) => acc + Number(t.dias || 0), 0);
+    el('kpiMedia').textContent = criticas.length ? `${Math.round(soma / criticas.length)} dias` : '0 dias';
+    el('kpiAntiga').textContent = `${criticas.length ? Math.max(...criticas.map(t => Number(t.dias || 0))) : 0} dias`;
+    el('kpiResponsaveis').textContent = new Set(criticas.map(t => t.responsavel || 'Não atribuído')).size;
   }
 
-  function preencherOpcoes(id, values, defaultLabel) {
-    const select = el(id); const selected = select.value;
-    select.replaceChildren();
-    const first = document.createElement('option'); first.value = ''; first.textContent = defaultLabel; select.appendChild(first);
-    [...new Set(values.map(v => String(v || '')))].sort((a,b) => a.localeCompare(b, 'pt-BR')).forEach(value => {
-      const option = document.createElement('option'); option.value = value; option.textContent = value; select.appendChild(option);
-    });
-    if ([...select.options].some(o => o.value === selected)) select.value = selected;
-  }
-
-  function preencherFiltros(tasks) {
-    preencherOpcoes('filtroStatus', tasks.map(t => t.status), 'Todos os status');
-    preencherOpcoes('filtroResponsavel', tasks.map(t => t.responsavel), 'Todos os responsáveis');
-    preencherOpcoes('filtroEspaco', tasks.map(t => t.espaco), 'Todos os espaços');
-  }
-
-  function obterTarefasFiltradas() {
-    const geral = norm(el('filtroGeral').value);
-    const id = norm(el('filtroId').value);
-    const nome = norm(el('filtroNome').value);
-    const status = el('filtroStatus').value;
-    const responsavel = el('filtroResponsavel').value;
-    const espaco = el('filtroEspaco').value;
-    const min = el('filtroDiasMin').value === '' ? null : Number(el('filtroDiasMin').value);
-    const max = el('filtroDiasMax').value === '' ? null : Number(el('filtroDiasMax').value);
-    const de = el('filtroCriacaoDe').value;
-    const ate = el('filtroCriacaoAte').value;
-
-    return tarefasCriticas.filter(t => {
-      const all = norm([t.id, t.name, t.status, t.dias, t.responsavel, t.espaco, t.criacao].join(' '));
-      if (geral && !all.includes(geral)) return false;
-      if (id && !norm(t.id).includes(id)) return false;
-      if (nome && !norm(t.name).includes(nome)) return false;
-      if (status && t.status !== status) return false;
-      if (responsavel && t.responsavel !== responsavel) return false;
-      if (espaco && t.espaco !== espaco) return false;
-      if (chartSpaceFilter && t.espaco !== chartSpaceFilter) return false;
-      if (min !== null && Number(t.dias) < min) return false;
-      if (max !== null && Number(t.dias) > max) return false;
-      if (de && t.criacao < de) return false;
-      if (ate && t.criacao > ate) return false;
-      return true;
-    }).sort((a,b) => {
-      let av = a[sortField] ?? ''; let bv = b[sortField] ?? '';
-      if (sortField === 'dias') { av = Number(av); bv = Number(bv); }
-      else { av = norm(av); bv = norm(bv); }
-      const result = av < bv ? -1 : av > bv ? 1 : 0;
-      return sortDirection === 'asc' ? result : -result;
-    });
-  }
-
-  function preencherTabela() {
-    const filtered = obterTarefasFiltradas();
-    const tbody = el('tabelaCorpo'); tbody.replaceChildren();
-    el('contadorTabela').textContent = `${filtered.length.toLocaleString('pt-BR')} de ${tarefasCriticas.length.toLocaleString('pt-BR')} tarefas críticas`;
-    if (!filtered.length) {
+  function preencherTabela(criticas) {
+    const tbody = el('tabelaCorpo');
+    tbody.replaceChildren();
+    if (!criticas.length) {
       const tr = document.createElement('tr'); const td = document.createElement('td');
-      td.colSpan = 8; td.className = 'p-5 text-center text-gray-400'; td.textContent = 'Nenhuma tarefa corresponde aos filtros selecionados.';
+      td.colSpan = 6; td.className = 'p-4 text-center text-gray-400'; td.textContent = 'Nenhuma tarefa com mais de 100 dias em aberto.';
       tr.appendChild(td); tbody.appendChild(tr); return;
     }
-    const fragment = document.createDocumentFragment();
-    for (const task of filtered) {
-      const tr = document.createElement('tr'); tr.className = 'hover:bg-gray-700/70 transition';
-      const values = [task.id, task.name, task.status, `${task.dias} dias`, task.responsavel, task.espaco, task.criacao];
+    criticas.sort((a, b) => Number(b.dias) - Number(a.dias));
+    for (const task of criticas) {
+      const tr = document.createElement('tr'); tr.className = 'hover:bg-gray-700 transition';
+      const values = [task.id, task.name, task.status, `${task.dias} dias`, task.responsavel];
       values.forEach((value, index) => {
         const td = document.createElement('td'); td.className = 'p-3'; td.textContent = value ?? '';
-        if (index === 0) td.classList.add('font-mono', 'text-blue-400', 'whitespace-nowrap');
-        if (index === 1) td.classList.add('font-medium', 'text-white', 'min-w-[240px]');
-        if (index === 2) { const badge = document.createElement('span'); badge.className = 'inline-block bg-yellow-900 text-yellow-300 px-2 py-1 rounded text-xs whitespace-nowrap'; badge.textContent = value ?? ''; td.replaceChildren(badge); }
-        if (index === 3) td.classList.add('font-bold', 'text-red-400', 'whitespace-nowrap');
-        if (index === 4 || index === 5) td.classList.add('text-gray-300');
-        if (index === 6) td.classList.add('whitespace-nowrap', 'text-gray-400');
+        if (index === 0) td.classList.add('font-mono', 'text-blue-400');
+        if (index === 1) td.classList.add('font-medium', 'text-white');
+        if (index === 2) { const badge = document.createElement('span'); badge.className = 'bg-yellow-900 text-yellow-300 px-2 py-1 rounded text-xs'; badge.textContent = value ?? ''; td.replaceChildren(badge); }
+        if (index === 3) td.classList.add('font-bold', 'text-red-400');
+        if (index === 4) td.classList.add('text-gray-300');
         tr.appendChild(td);
       });
       const action = document.createElement('td'); action.className = 'p-3';
-      const link = document.createElement('a'); link.textContent = 'Ver no ClickUp'; link.className = 'text-blue-400 hover:underline whitespace-nowrap';
+      const link = document.createElement('a'); link.textContent = 'Ver no ClickUp'; link.className = 'text-blue-400 hover:underline';
       try {
         const url = new URL(task.url || '#');
-        if (url.protocol === 'https:' && url.hostname === 'app.clickup.com') { link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; }
-        else { link.textContent = 'Link indisponível'; link.className = 'text-gray-500'; }
+        if (url.protocol === 'https:' && url.hostname === 'app.clickup.com') {
+          link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        } else { link.textContent = 'Link indisponível'; link.className = 'text-gray-500'; }
       } catch (_) { link.textContent = 'Link indisponível'; link.className = 'text-gray-500'; }
-      action.appendChild(link); tr.appendChild(action); fragment.appendChild(tr);
+      action.appendChild(link); tr.appendChild(action); tbody.appendChild(tr);
     }
-    tbody.appendChild(fragment);
-    document.querySelectorAll('[data-sort-indicator]').forEach(span => span.textContent = span.dataset.sortIndicator === sortField ? (sortDirection === 'asc' ? '↑' : '↓') : '↕');
   }
 
-  function aplicarFiltroGrafico(tipo, valor) {
-    // Um clique no gráfico passa a mostrar exatamente o conjunto daquele segmento.
-    ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => { el(id).value = ''; });
-    chartSpaceFilter = '';
-    if (tipo === 'espaco') { el('filtroEspaco').value = valor; chartSpaceFilter = valor; }
-    if (tipo === 'responsavel') el('filtroResponsavel').value = valor;
-    if (tipo === 'status') el('filtroStatus').value = valor;
-    preencherTabela();
-    mostrarMensagem(`Exibindo tarefas de ${tipo === 'espaco' ? 'espaço' : tipo === 'responsavel' ? 'responsável' : 'status'}: ${valor}. Use “Limpar filtros” para voltar à lista completa.`);
-    el('detalhamentoTitulo').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
-  function renderizarGraficos(tasks) {
-    const espacos = new Map(); const responsaveis = new Map(); const statusMap = new Map();
-    tasks.forEach(t => {
-      const space = t.espaco || 'Espaço não identificado';
-      const owner = t.responsavel || 'Não atribuído';
-      const status = t.status || 'Sem status';
-      espacos.set(space, (espacos.get(space) || 0) + 1);
-      responsaveis.set(owner, (responsaveis.get(owner) || 0) + 1);
-      statusMap.set(status, (statusMap.get(status) || 0) + 1);
-    });
-    const spaceRows = [...espacos.entries()].sort((a,b) => b[1] - a[1]);
-    const ownerRows = [...responsaveis.entries()].sort((a,b) => b[1] - a[1]).slice(0, 10);
-    const statusRows = [...statusMap.entries()].sort((a,b) => b[1] - a[1]);
-    [chartEspacos, chartResponsaveis, chartStatus].forEach(chart => { if (chart) chart.destroy(); });
-
-    const commonScales = {
-      x: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 }, grid: { color: '#374151' } },
-      y: { ticks: { color: '#d1d5db', autoSkip: false }, grid: { display: false } }
-    };
-    const commonPlugins = { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw} tarefas` } } };
+  function renderizarGraficos(espacos, responsaveis) {
+    if (chartEspacos) chartEspacos.destroy();
+    if (chartResponsaveis) chartResponsaveis.destroy();
     chartEspacos = new Chart(el('graficoEspacos').getContext('2d'), {
-      type: 'bar',
-      data: { labels: spaceRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: spaceRows.map(x => x[1]), backgroundColor: '#3b82f6', borderRadius: 4 }] },
-      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('espaco', spaceRows[elements[0].index]?.[0] || ''); },
-        plugins: commonPlugins, scales: commonScales }
+      type: 'bar', data: { labels: Object.keys(espacos), datasets: [{ label: 'Tarefas por Espaço', data: Object.values(espacos), backgroundColor: '#3b82f6' }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#d1d5db' } }, y: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 } } } }
     });
     chartResponsaveis = new Chart(el('graficoResponsaveis').getContext('2d'), {
-      type: 'bar',
-      data: { labels: ownerRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: ownerRows.map(x => x[1]), backgroundColor: '#10b981', borderRadius: 4 }] },
-      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('responsavel', ownerRows[elements[0].index]?.[0] || ''); },
-        plugins: commonPlugins, scales: commonScales }
-    });
-    chartStatus = new Chart(el('graficoStatus').getContext('2d'), {
-      type: 'bar',
-      data: { labels: statusRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: statusRows.map(x => x[1]), backgroundColor: '#a78bfa', borderRadius: 4 }] },
-      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('status', statusRows[elements[0].index]?.[0] || ''); },
-        plugins: commonPlugins, scales: commonScales }
+      type: 'doughnut', data: { labels: Object.keys(responsaveis), datasets: [{ data: Object.values(responsaveis), backgroundColor: ['#ef4444', '#f59e0b', '#10b981', '#6366f1', '#ec4899', '#06b6d4', '#8b5cf6'] }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#d1d5db' } } } }
     });
   }
 
   function processarDashboard(tasks) {
-    tarefasCriticas = tasks.filter(t => Number(t.dias) > 100 && !/cancelad|cancelled|canceled|finalizad|conclu|complet|closed|done/i.test(String(t.status || '')));
-    atualizarKpis(tarefasCriticas); preencherFiltros(tarefasCriticas); renderizarGraficos(tarefasCriticas); preencherTabela();
+    const criticas = tasks.filter(t => Number(t.dias) > 100);
+    atualizarKpis(criticas); preencherTabela(criticas);
+    const espacos = {}; const responsaveis = {};
+    criticas.forEach(t => { const s = t.espaco || 'Geral'; const r = t.responsavel || 'Não atribuído'; espacos[s] = (espacos[s] || 0) + 1; responsaveis[r] = (responsaveis[r] || 0) + 1; });
+    renderizarGraficos(espacos, responsaveis);
   }
 
-  async function carregarDados(forceRefresh = false) {
-    const btn = el('atualizar'); btn.disabled = true; btn.textContent = 'Atualizando…'; ocultarMensagem();
+  let pollingAtivo = false;
+  async function carregarDados(forcarAtualizacao = false) {
+    const btn = el('atualizar');
+    btn.disabled = true; btn.textContent = 'Buscando todas as tarefas…';
+    ocultarMensagem();
     try {
-      const response = await fetch(`/api/tasks${forceRefresh ? '?refresh=1' : ''}`, { cache: 'no-store' });
+      const url = forcarAtualizacao ? '/api/tasks?refresh=1' : '/api/tasks';
+      const response = await fetch(url, { cache: 'no-store' });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Não foi possível carregar os dados.');
-      processarDashboard(payload.tasks || []);
-      const data = payload.updated_at ? new Date(payload.updated_at) : new Date();
-      el('ultimaAtualizacao').textContent = `Última atualização: ${data.toLocaleString('pt-BR')}`;
-      mostrarMensagem(`${(payload.tasks || []).length.toLocaleString('pt-BR')} tarefas críticas carregadas${payload.cached ? ' do cache' : ' do ClickUp'}.`);
+      if (payload.complete) {
+        processarDashboard(payload.tasks || []);
+        const data = payload.updated_at ? new Date(payload.updated_at) : new Date();
+        el('ultimaAtualizacao').textContent = `Última atualização: ${data.toLocaleString('pt-BR')}`;
+        mostrarMensagem(`${(payload.tasks || []).length} tarefas críticas carregadas. Busca completa confirmada.`);
+      } else {
+        mostrarMensagem('A consulta completa está em andamento. Esta página vai atualizar os resultados automaticamente.');
+      }
+      if (payload.refreshing && !pollingAtivo) {
+        pollingAtivo = true;
+        const acompanhar = async () => {
+          while (true) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            const r = await fetch('/api/tasks', { cache: 'no-store' });
+            const p = await r.json();
+            if (p.complete) {
+              processarDashboard(p.tasks || []);
+              const d = p.updated_at ? new Date(p.updated_at) : new Date();
+              el('ultimaAtualizacao').textContent = `Última atualização: ${d.toLocaleString('pt-BR')}`;
+              mostrarMensagem(`${(p.tasks || []).length} tarefas críticas carregadas. Busca completa confirmada.`);
+            }
+            if (!p.refreshing) {
+              if (!p.complete && p.error) mostrarMensagem(p.error, true);
+              break;
+            }
+          }
+        };
+        acompanhar().catch(err => mostrarMensagem(err.message || 'Falha ao acompanhar a atualização.', true)).finally(() => {
+          pollingAtivo = false; btn.disabled = false; btn.textContent = 'Atualizar dados';
+        });
+      } else if (!payload.refreshing) {
+        btn.disabled = false; btn.textContent = 'Atualizar dados';
+      }
     } catch (error) {
       mostrarMensagem(error.message || 'Erro ao carregar dados. Tente novamente.', true);
-      el('tabelaCorpo').replaceChildren();
-      const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 8; td.className = 'p-4 text-center text-red-300'; td.textContent = 'Não foi possível carregar as tarefas.'; tr.appendChild(td); el('tabelaCorpo').appendChild(tr);
-    } finally { btn.disabled = false; btn.textContent = 'Atualizar dados'; }
-  }
-
-  ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => {
-    el(id).addEventListener('input', () => { if (id === 'filtroEspaco') chartSpaceFilter = ''; preencherTabela(); });
-    el(id).addEventListener('change', () => { if (id === 'filtroEspaco') chartSpaceFilter = ''; preencherTabela(); });
-  });
-  document.querySelectorAll('[data-sort]').forEach(button => button.addEventListener('click', () => {
-    const field = button.dataset.sort;
-    if (sortField === field) sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-    else { sortField = field; sortDirection = field === 'dias' ? 'desc' : 'asc'; }
-    preencherTabela();
-  }));
-  el('limparFiltros').addEventListener('click', () => {
-    ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => el(id).value = '');
-    chartSpaceFilter = ''; preencherTabela(); ocultarMensagem();
-  });
-
-  el('exportarXlsx').addEventListener('click', async () => {
-    const btn = el('exportarXlsx');
-    const selectedTasks = obterTarefasFiltradas();
-    if (!selectedTasks.length) {
-      mostrarMensagem('Não há tarefas para exportar com os filtros atuais.', true);
-      return;
+      btn.disabled = false; btn.textContent = 'Atualizar dados';
     }
-    btn.disabled = true; btn.textContent = 'Gerando XLSX…';
-    try {
-      const response = await fetch('/api/export.xlsx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tasks: selectedTasks }),
-        cache: 'no-store'
-      });
-      if (!response.ok) {
-        let message = 'Não foi possível gerar o arquivo XLSX.';
-        try { const payload = await response.json(); message = payload.error || message; } catch (_) {}
-        throw new Error(message);
-      }
-      const blob = await response.blob();
-      const disposition = response.headers.get('Content-Disposition') || '';
-      const match = disposition.match(/filename="?([^";]+)"?/i);
-      const filename = match ? match[1] : 'detalhamento_tarefas_clickup.xlsx';
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement('a'); link.href = objectUrl; link.download = filename;
-      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(objectUrl);
-      mostrarMensagem(`Exportação concluída: ${selectedTasks.length.toLocaleString('pt-BR')} tarefas exportadas conforme os filtros e a ordenação atuais.`);
-    } catch (error) {
-      mostrarMensagem(error.message || 'Falha ao exportar os dados.', true);
-    } finally { btn.disabled = false; btn.textContent = 'Exportar XLSX'; }
-  });
-
+  }
   el('atualizar').addEventListener('click', () => carregarDados(true));
-  carregarDados(false);
+  carregarDados();
 </script>
 </body>
 </html>
