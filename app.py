@@ -14,9 +14,10 @@ app = Flask(__name__, template_folder="templates")
 
 API_BASE = "https://api.clickup.com/api/v2"
 DIAS_MINIMOS = 100
-CONNECT_TIMEOUT = 5
-READ_TIMEOUT = 15
+CONNECT_TIMEOUT = 4
+READ_TIMEOUT = 12
 MAX_RETRIES = 3
+PAGE_RETRIES = 6
 CACHE_TTL_SECONDS = 300
 # Não limitamos a quantidade de páginas: a busca só termina quando o ClickUp
 # devolver uma página vazia. A atualização roda em segundo plano.
@@ -32,6 +33,8 @@ STATUS_INATIVOS = {
 _cache_lock = threading.Lock()
 _refresh_lock = threading.Lock()
 _cache = {"at": 0.0, "tasks": None, "updated_at": None}
+_progress_lock = threading.Lock()
+_progress = {"tasks": [], "page": 0, "received": 0, "active": False}
 
 
 def _safe_json(response):
@@ -172,16 +175,41 @@ def buscar_tarefas_clickup():
         app.logger.info("Iniciando busca completa de tarefas antigas no workspace %s.", team.get("id"))
 
         while True:
-            payload = _get_json(
-                session,
-                f"{API_BASE}/team/{team['id']}/task",
-                {
-                    "page": page,
-                    "subtasks": "true",
-                    "date_created_lt": cutoff_ms,
-                    "include_closed": "false",
-                },
-            )
+            # A falha em uma página não reinicia a coleta desde a página zero.
+            # Repetimos a mesma página e mantemos o que já foi coletado em memória.
+            page_error = None
+            for page_attempt in range(PAGE_RETRIES):
+                try:
+                    payload = _get_json(
+                        session,
+                        f"{API_BASE}/team/{team['id']}/task",
+                        {
+                            "page": page,
+                            "limit": 100,
+                            "subtasks": "true",
+                            "date_created_lt": cutoff_ms,
+                            "include_closed": "false",
+                        },
+                    )
+                    page_error = None
+                    break
+                except (requests.RequestException, ValueError) as exc:
+                    page_error = exc
+                    if page_attempt == PAGE_RETRIES - 1:
+                        app.logger.exception(
+                            "Falha persistente na página %s após %s tentativas; coleta interrompida sem substituir o cache.",
+                            page, PAGE_RETRIES,
+                        )
+                        raise
+                    delay = min(30, 2 ** page_attempt)
+                    app.logger.warning(
+                        "Página %s falhou (%s/%s: %s); tentando a mesma página novamente em %ss.",
+                        page, page_attempt + 1, PAGE_RETRIES, type(exc).__name__, delay,
+                    )
+                    time.sleep(delay)
+            if page_error is not None:
+                raise page_error
+
             tasks = payload.get("tasks", [])
             if not tasks:
                 app.logger.info(
@@ -239,8 +267,13 @@ def buscar_tarefas_clickup():
                     "url": str(task.get("url") or "#"),
                 })
             page += 1
-            if page % 10 == 0:
-                app.logger.info("Busca ClickUp em andamento: %s páginas consultadas; %s tarefas recebidas.", page, total_received)
+            with _progress_lock:
+                _progress.update(tasks=list(critical), page=page, received=total_received, active=True)
+            if page % 5 == 0:
+                app.logger.info(
+                    "Busca ClickUp em andamento: %s páginas consultadas; %s tarefas recebidas; %s tarefas críticas acumuladas.",
+                    page, total_received, len(critical),
+                )
         return critical
     finally:
         session.close()
@@ -249,17 +282,21 @@ def buscar_tarefas_clickup():
 def _refresh_worker():
     """Atualiza em segundo plano e só troca o cache após uma busca completa."""
     global _refresh_thread, _refreshing, _last_refresh_error
+    with _progress_lock:
+        _progress.update(tasks=[], page=0, received=0, active=True)
     try:
         tasks = buscar_tarefas_clickup()
         updated_at = datetime.now(timezone.utc).isoformat()
         with _cache_lock:
             _cache.update(at=time.time(), tasks=tasks, updated_at=updated_at)
         _last_refresh_error = None
-        app.logger.info("Cache atualizado com %s tarefas. Nenhum resultado parcial foi publicado.", len(tasks))
+        app.logger.info("Cache atualizado com %s tarefas após coleta completa.", len(tasks))
     except Exception as exc:
         _last_refresh_error = type(exc).__name__
         app.logger.exception("Atualização completa do ClickUp falhou; cache anterior foi preservado.")
     finally:
+        with _progress_lock:
+            _progress["active"] = False
         with _refresh_lock:
             _refreshing = False
             _refresh_thread = None
@@ -327,10 +364,16 @@ def api_tasks():
         "refreshing": refreshing,
         "complete": tasks is not None,
     }
+    with _progress_lock:
+        payload["progress"] = {
+            "page": _progress["page"],
+            "received": _progress["received"],
+            "critical_accumulated": len(_progress["tasks"]),
+        }
     if _last_refresh_error and tasks is None and not refreshing:
         payload["error"] = (
-            "Não foi possível concluir a busca completa no ClickUp. Nenhum resultado parcial foi exibido. "
-            "Confira o token/permissões e os logs do Render e tente atualizar novamente."
+            "Não foi possível concluir a busca completa no ClickUp. Nenhum resultado parcial foi marcado como completo. "
+            "A última página com falha aparece nos logs do Render; tente atualizar novamente."
         )
         return jsonify(payload), 502
     return jsonify(payload), 200
