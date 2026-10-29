@@ -1,128 +1,96 @@
-    except requests.HTTPError as exc:
-        code = exc.response.status_code if exc.response is not None else "desconhecido"
-        app.logger.warning("ClickUp API retornou HTTP %s", code)
-        return jsonify({
-            "error": "Não foi possível consultar o ClickUp. Verifique o token e as permissões configuradas no Render."
-        }), 502
+# -*- coding: utf-8 -*-
+"""Backend Flask do Dashboard ClickUp: filtro por data, retries e cache de contingência."""
+import logging
+import os
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
-    except (requests.RequestException, ValueError) as exc:
-        app.logger.warning("Falha de comunicação com ClickUp: %s", type(exc).__name__)
-        return jsonify({
-            "error": "Falha de comunicação com o ClickUp. Tente novamente em alguns instantes."
-        }), 502
+import requests
+from flask import Flask, jsonify, render_template, request, send_file
 
-    except RuntimeError as exc:
-        app.logger.warning("Configuração ClickUp: %s", exc)
-        return jsonify({"error": str(exc)}), 503
+app = Flask(__name__, template_folder="templates")
 
-    except Exception:
-        app.logger.exception("Erro inesperado ao carregar tarefas do ClickUp.")
-        return jsonify({
-            "error": "Erro interno ao carregar as tarefas. Consulte os logs do servidor."
-        }), 500
+API_BASE = "https://api.clickup.com/api/v2"
+DIAS_MINIMOS = 100
+CONNECT_TIMEOUT = 4
+READ_TIMEOUT = 8
+MAX_RETRIES = 2
+CACHE_TTL_SECONDS = 300
+MAX_PAGES = 10
+MAX_FETCH_SECONDS = 75  # impede uma atualização de consumir todo o timeout do Gunicorn
+
+STATUS_INATIVOS = {
+    "cancelado", "cancelada", "cancelados", "canceladas",
+    "cancelled", "canceled", "finalizado", "finalizada",
+    "finalizados", "finalizadas", "closed", "done",
+    "concluido", "concluida", "concluídos", "concluídas",
+    "complete", "completed",
+}
+
+_cache_lock = threading.Lock()
+_refresh_lock = threading.Lock()
+_cache = {"at": 0.0, "tasks": None, "updated_at": None}
 
 
-@app.post("/api/export.xlsx")
-def export_xlsx():
-    """Exporta as tarefas enviadas pela tabela filtrada do dashboard."""
+def _safe_json(response):
+    """Valida HTTP e JSON, evitando tratar HTML de erro como JSON."""
+    response.raise_for_status()
     try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Alignment, Font, PatternFill
-        from openpyxl.utils import get_column_letter
-    except ImportError:
-        return jsonify({
-            "error": "Exportação XLSX indisponível: dependência openpyxl não instalada."
-        }), 503
+        payload = response.json()
+    except (requests.exceptions.JSONDecodeError, ValueError) as exc:
+        content_type = response.headers.get("Content-Type", "")
+        app.logger.warning(
+            "Resposta não-JSON do ClickUp (HTTP %s, Content-Type %s).",
+            response.status_code, content_type
+        )
+        raise ValueError("O ClickUp retornou uma resposta que não é JSON válido.") from exc
 
-    payload = request.get_json(silent=True) or {}
-    rows = payload.get("tasks")
-    if not isinstance(rows, list):
-        return jsonify({
-            "error": "Não foi possível identificar as tarefas para exportação."
-        }), 400
-    if len(rows) > 20000:
-        return jsonify({
-            "error": "A seleção excede o limite de 20.000 tarefas por exportação."
-        }), 413
+    if not isinstance(payload, dict):
+        raise ValueError("Resposta inesperada da API do ClickUp.")
+    return payload
 
-    headers = [
-        "ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
-        "Espaço do ClickUp", "Data de criação", "Link ClickUp",
-    ]
-    fields = ["id", "name", "status", "dias", "responsavel", "espaco", "criacao", "url"]
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Detalhamento das Tarefas"
-    sheet.append(headers)
+def _get_json(session, url, params=None):
+    """Repete falhas transitórias de rede, HTTP 429 e HTTP 5xx."""
+    last_error = None
 
-    for cell in sheet[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="334155")
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
-
-    def safe_cell(value):
-        if value is None:
-            return ""
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return value
-        value = str(value)
-        # Mitiga fórmulas maliciosas em valores exportados.
-        return "'" + value if value.startswith(("=", "+", "-", "@")) else value
-
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        values = [safe_cell(item.get(field, "")) for field in fields]
-        url = str(item.get("url") or "")
-        if not (
-            url.startswith("https://app.clickup.com/")
-            or url.startswith("https://sharing.clickup.com/")
-        ):
-            values[-1] = ""
-
-        sheet.append(values)
-        link = sheet.cell(row=sheet.max_row, column=8)
-        if values[-1]:
-            link.hyperlink = values[-1]
-            link.style = "Hyperlink"
-
-        days_cell = sheet.cell(row=sheet.max_row, column=4)
-        if isinstance(days_cell.value, (int, float)):
-            days_cell.number_format = '0 "dias"'
-
-    sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = sheet.dimensions
-    sheet.row_dimensions[1].height = 30
-    for index, width in enumerate([18, 55, 22, 18, 32, 32, 18, 48], start=1):
-        sheet.column_dimensions[get_column_letter(index)].width = width
-    for row in sheet.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = Alignment(
-                vertical="top",
-                wrap_text=(cell.column == 2),
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = session.get(
+                url,
+                params=params,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             )
 
-    output = BytesIO()
-    workbook.save(output)
-    output.seek(0)
-    filename = f"detalhamento_tarefas_clickup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    return send_file(
-        output,
-        as_attachment=True,
-        download_name=filename,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+            transient = response.status_code == 429 or 500 <= response.status_code <= 599
+            if transient and attempt < MAX_RETRIES - 1:
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = min(8.0, max(1.0, float(retry_after))) if retry_after else 2 ** attempt
+                except (TypeError, ValueError):
+                    delay = 2 ** attempt
+                app.logger.warning(
+                    "ClickUp respondeu HTTP %s; nova tentativa em %.1fs (%s/%s).",
+                    response.status_code, delay, attempt + 1, MAX_RETRIES
+                )
+                time.sleep(delay)
+                continue
 
+            return _safe_json(response)
 
-@app.get("/health")
-def health():
-    return jsonify({"status": "ok"})
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            if attempt >= MAX_RETRIES - 1:
+                raise
+            delay = 2 ** attempt
+            app.logger.warning(
+                "Falha temporária de rede com ClickUp (%s); nova tentativa em %ss (%s/%s).",
+                type(exc).__name__, delay, attempt + 1, MAX_RETRIES
+            )
+            time.sleep(delay)
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-    app.run(
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "5000")),
-        debug=False,
+    if last_error:
+        raise last_error
+    raise requests.RequestException("Não foi possível consultar a API do ClickUp.")
