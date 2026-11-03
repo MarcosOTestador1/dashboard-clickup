@@ -105,10 +105,11 @@ def carregar_cache_supabase():
             finally:
                 conn.close()
         except Exception as exc:
-            # Não registrar a URL nem a exceção completa para evitar exposição de dados de conexão.
+            # Não registrar credenciais. Permite nova tentativa em requisições futuras.
             app.logger.warning("Não foi possível carregar o cache do Supabase (%s).", type(exc).__name__)
-        finally:
-            _db_cache_loaded = True
+            _db_cache_loaded = False
+            return
+        _db_cache_loaded = True
 
 
 def salvar_cache_supabase(tasks, updated_at):
@@ -468,9 +469,11 @@ def api_tasks():
     payload = {
         "tasks": tasks or [],
         "updated_at": updated_at,
-        "cached": bool(tasks is not None),
-        "refreshing": refreshing,
+        "cached": tasks is not None,
+        # complete descreve o cache servido, não a coleta que está em andamento.
         "complete": tasks is not None,
+        "refreshing": refreshing,
+        "last_refresh_error": _last_refresh_error,
     }
     with _progress_lock:
         payload["progress"] = {
@@ -481,9 +484,13 @@ def api_tasks():
     if _last_refresh_error and tasks is None and not refreshing:
         payload["error"] = (
             "Não foi possível concluir a busca completa no ClickUp. Nenhum resultado parcial foi marcado como completo. "
-            "A última página com falha aparece nos logs do Render; tente atualizar novamente."
+            "Consulte os logs do Render e tente atualizar novamente."
         )
         return jsonify(payload), 502
+    if _last_refresh_error and tasks is not None:
+        payload["warning"] = (
+            "A última atualização falhou; os dados completos do cache anterior continuam disponíveis."
+        )
     return jsonify(payload), 200
 
 
@@ -583,6 +590,40 @@ def export_xlsx():
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.get("/health/cache")
+def health_cache():
+    """Diagnóstico seguro de cache; não retorna tarefas nem dados de conexão."""
+    with _cache_lock:
+        has_cache = _cache["tasks"] is not None
+        task_count = len(_cache["tasks"] or [])
+        updated_at = _cache["updated_at"]
+    db_configured = bool(_database_url())
+    db_available = False
+    if db_configured:
+        conn = None
+        try:
+            conn = _db_connect()
+            with conn.cursor() as cur:
+                cur.execute("SELECT complete, updated_at, jsonb_array_length(tasks) FROM public.clickup_dashboard_cache WHERE id = 1")
+                row = cur.fetchone()
+            db_available = True
+            db_info = {"record_exists": row is not None, "complete": bool(row[0]) if row else False,
+                       "updated_at": row[1].isoformat() if row and row[1] else None,
+                       "task_count": row[2] if row else 0}
+        except Exception as exc:
+            db_info = {"error_type": type(exc).__name__}
+        finally:
+            if conn is not None:
+                conn.close()
+    else:
+        db_info = {"configured": False}
+    with _refresh_lock:
+        refreshing = _refreshing
+    return jsonify({"memory_cache": {"available": has_cache, "task_count": task_count, "updated_at": updated_at},
+                    "supabase": {"configured": db_configured, "available": db_available, **db_info},
+                    "refreshing": refreshing, "last_refresh_error": _last_refresh_error})
 
 
 if __name__ == "__main__":
