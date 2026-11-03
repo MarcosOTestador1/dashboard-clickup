@@ -1,0 +1,33 @@
+name: Atualizar cache do dashboard ClickUp
+
+on:
+  schedule:
+    # Horários de Brasília (UTC-3): 07:30, 12:00, 15:00 e 17:00.
+    # GitHub Actions usa UTC. O agendamento roda todos os dias.
+    - cron: "30 10 * * *"
+    - cron: "0 15 * * *"
+    - cron: "0 18 * * *"
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Solicitar atualização ao Render
+        env:
+          DASHBOARD_URL: https://dashboard-clickup-uo9p.onrender.com
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "Erro: configure o secret CRON_SECRET nas configurações do repositório GitHub."
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "X-Cron-Secret: $CRON_SECRET" \
+            --header "Accept: application/json" \
+            "$DASHBOARD_URL/api/refresh"
