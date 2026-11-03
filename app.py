@@ -2,6 +2,7 @@
 """Backend Flask do Dashboard ClickUp: filtro por data, retries e cache de contingência."""
 import logging
 import os
+import hmac
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -492,6 +493,28 @@ def api_tasks():
             "A última atualização falhou; os dados completos do cache anterior continuam disponíveis."
         )
     return jsonify(payload), 200
+
+
+@app.post("/api/refresh")
+def scheduled_refresh():
+    """Endpoint protegido para iniciar a atualização agendada pelo GitHub Actions."""
+    expected = (os.getenv("CRON_SECRET") or "").strip()
+    supplied = (request.headers.get("X-Cron-Secret") or "").strip()
+    if not expected:
+        app.logger.error("CRON_SECRET não está configurado; atualização agendada recusada.")
+        return jsonify({"ok": False, "error": "Agendamento não configurado no servidor."}), 503
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        return jsonify({"ok": False, "error": "Não autorizado."}), 401
+
+    carregar_cache_supabase()
+    started = iniciar_atualizacao(force=True)
+    with _refresh_lock:
+        refreshing = _refreshing
+    if started:
+        return jsonify({"ok": True, "started": True, "message": "Atualização completa iniciada em segundo plano."}), 202
+    if refreshing:
+        return jsonify({"ok": True, "started": False, "message": "Já existe uma atualização em andamento."}), 200
+    return jsonify({"ok": False, "error": "Não foi possível iniciar a atualização."}), 500
 
 
 @app.post("/api/export.xlsx")
