@@ -8,6 +8,13 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 import requests
+
+try:
+    import psycopg2
+    from psycopg2.extras import Json
+except ImportError:  # Permite iniciar sem persistência se a dependência não estiver instalada.
+    psycopg2 = None
+    Json = None
 from flask import Flask, jsonify, render_template, request, send_file
 
 app = Flask(__name__, template_folder="templates")
@@ -33,8 +40,101 @@ STATUS_INATIVOS = {
 _cache_lock = threading.Lock()
 _refresh_lock = threading.Lock()
 _cache = {"at": 0.0, "tasks": None, "updated_at": None}
+_db_cache_loaded = False
+_db_cache_lock = threading.Lock()
 _progress_lock = threading.Lock()
 _progress = {"tasks": [], "page": 0, "received": 0, "active": False}
+
+
+
+def _database_url():
+    """Retorna a URL do PostgreSQL sem imprimir credenciais nos logs."""
+    return (os.getenv("DATABASE_URL") or "").strip()
+
+
+def _db_connect():
+    """Abre conexão com o Supabase/PostgreSQL, se configurado."""
+    database_url = _database_url()
+    if not database_url:
+        return None
+    if psycopg2 is None:
+        raise RuntimeError(
+            "DATABASE_URL está configurada, mas psycopg2 não está instalado. "
+            "Adicione psycopg2-binary ao requirements.txt."
+        )
+    return psycopg2.connect(database_url, connect_timeout=8, sslmode="require")
+
+
+def carregar_cache_supabase():
+    """Carrega o último cache persistido; não falha a aplicação se o DB estiver indisponível."""
+    global _db_cache_loaded
+    if _db_cache_loaded:
+        return
+    with _db_cache_lock:
+        if _db_cache_loaded:
+            return
+        try:
+            conn = _db_connect()
+            if conn is None:
+                app.logger.info("DATABASE_URL não configurada; cache seguirá apenas em memória.")
+                _db_cache_loaded = True
+                return
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT tasks, updated_at, complete "
+                        "FROM public.clickup_dashboard_cache WHERE id = 1"
+                    )
+                    row = cur.fetchone()
+                if row and row[2] and row[0] is not None:
+                    tasks, updated_at, complete = row
+                    if isinstance(tasks, str):
+                        import json
+                        tasks = json.loads(tasks)
+                    if isinstance(tasks, list):
+                        updated_iso = updated_at.isoformat() if updated_at else None
+                        with _cache_lock:
+                            _cache.update(
+                                at=time.time(),
+                                tasks=tasks,
+                                updated_at=updated_iso,
+                            )
+                        app.logger.info("Cache persistido carregado do Supabase: %s tarefas.", len(tasks))
+                else:
+                    app.logger.info("Supabase ainda não possui um cache completo para carregar.")
+            finally:
+                conn.close()
+        except Exception as exc:
+            # Não registrar a URL nem a exceção completa para evitar exposição de dados de conexão.
+            app.logger.warning("Não foi possível carregar o cache do Supabase (%s).", type(exc).__name__)
+        finally:
+            _db_cache_loaded = True
+
+
+def salvar_cache_supabase(tasks, updated_at):
+    """Persiste somente uma coleta completa na tabela criada no Supabase."""
+    conn = _db_connect()
+    if conn is None:
+        app.logger.warning("DATABASE_URL não configurada; resultados não serão persistidos entre reinicializações.")
+        return False
+    try:
+        # A coluna updated_at é TIMESTAMPTZ; convertê-la para datetime com fuso.
+        parsed_updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO public.clickup_dashboard_cache (id, tasks, updated_at, complete) "
+                    "VALUES (1, %s, %s, TRUE) "
+                    "ON CONFLICT (id) DO UPDATE SET "
+                    "tasks = EXCLUDED.tasks, "
+                    "updated_at = EXCLUDED.updated_at, "
+                    "complete = TRUE",
+                    (Json(tasks), parsed_updated_at),
+                )
+        app.logger.info("Cache persistido no Supabase: %s tarefas.", len(tasks))
+        return True
+    finally:
+        conn.close()
 
 
 def _safe_json(response):
@@ -287,6 +387,13 @@ def _refresh_worker():
     try:
         tasks = buscar_tarefas_clickup()
         updated_at = datetime.now(timezone.utc).isoformat()
+        # A coleta só é publicada após terminar todas as páginas. O banco é atualizado
+        # antes do cache em memória para manter o último snapshot persistido íntegro.
+        try:
+            salvar_cache_supabase(tasks, updated_at)
+        except Exception as db_exc:
+            # O dashboard continua funcional mesmo se o Supabase estiver temporariamente indisponível.
+            app.logger.warning("Falha ao persistir cache no Supabase (%s); mantendo cache em memória.", type(db_exc).__name__)
         with _cache_lock:
             _cache.update(at=time.time(), tasks=tasks, updated_at=updated_at)
         _last_refresh_error = None
@@ -329,6 +436,7 @@ _last_refresh_error = None
 
 
 def estado_tarefas(force_refresh=False):
+    carregar_cache_supabase()
     iniciar_atualizacao(force=force_refresh)
     with _cache_lock:
         tasks = list(_cache["tasks"]) if _cache["tasks"] is not None else None
