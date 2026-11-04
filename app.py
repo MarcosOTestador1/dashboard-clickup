@@ -107,7 +107,7 @@ def carregar_cache_supabase():
                 conn.close()
         except Exception as exc:
             # Não registrar credenciais. Permite nova tentativa em requisições futuras.
-            app.logger.warning("Não foi possível carregar o cache do Supabase (%s).", type(exc).__name__)
+            app.logger.exception("Não foi possível carregar o cache do Supabase. Erro detalhado:")
             _db_cache_loaded = False
             return
         _db_cache_loaded = True
