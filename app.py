@@ -100,14 +100,23 @@ def carregar_cache_supabase():
                                 tasks=tasks,
                                 updated_at=updated_iso,
                             )
-                        app.logger.info("Cache persistido carregado do Supabase: %s tarefas.", len(tasks))
+                        app.logger.info(
+                            "Cache persistido carregado do Supabase: %s tarefas.",
+                            len(tasks),
+                        )
                 else:
-                    app.logger.info("Supabase ainda não possui um cache completo para carregar.")
+                    app.logger.info(
+                        "Supabase ainda não possui um cache completo para carregar."
+                    )
             finally:
                 conn.close()
-        except Exception:            # O dashboard continua funcional mesmo se o Supabase estiver temporariamente indisponível.            app.logger.exception(                "Falha ao persistir cache no Supabase. Erro detalhado:"            )
+        except Exception:
+            app.logger.exception(
+                "Não foi possível carregar o cache do Supabase. Erro detalhado:"
+            )
+            _db_cache_loaded = False
+            return
         _db_cache_loaded = True
-
 
 def salvar_cache_supabase(tasks, updated_at):
     """Persiste somente uma coleta completa na tabela criada no Supabase."""
