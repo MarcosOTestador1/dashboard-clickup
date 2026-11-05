@@ -105,11 +105,7 @@ def carregar_cache_supabase():
                     app.logger.info("Supabase ainda não possui um cache completo para carregar.")
             finally:
                 conn.close()
-        except Exception as exc:
-            # Não registrar credenciais. Permite nova tentativa em requisições futuras.
-            app.logger.exception("Não foi possível carregar o cache do Supabase. Erro detalhado:")
-            _db_cache_loaded = False
-            return
+        except Exception:            # O dashboard continua funcional mesmo se o Supabase estiver temporariamente indisponível.            app.logger.exception(                "Falha ao persistir cache no Supabase. Erro detalhado:"            )
         _db_cache_loaded = True
 
 
@@ -643,7 +639,7 @@ def health_cache():
     else:
         db_info = {"configured": False}
     with _refresh_lock:
-        refreshing = _refreshing
+        refreshing = _refresh_refreshing if '_refresh_refreshing' in globals() else _refreshing
     return jsonify({"memory_cache": {"available": has_cache, "task_count": task_count, "updated_at": updated_at},
                     "supabase": {"configured": db_configured, "available": db_available, **db_info},
                     "refreshing": refreshing, "last_refresh_error": _last_refresh_error})
