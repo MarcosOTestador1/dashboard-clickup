@@ -228,27 +228,97 @@ def _space_name(task, spaces_by_id):
     return "Espaço não identificado"
 
 
-def _cliente_value(task):
-    """Extrai o campo personalizado Cliente, resolvendo opções de dropdown."""
-    direct = task.get("Cliente") or task.get("cliente")
+def _cliente_value(task, cliente_options_by_field_id=None):
+    """Extrai Cliente e converte IDs de dropdown em nomes legíveis."""
+    cliente_options_by_field_id = cliente_options_by_field_id or {}
+    direct = task.get("Cliente")
     if direct not in (None, ""):
         return str(direct).strip()
+
     fields = task.get("custom_fields") or []
     if not isinstance(fields, list):
         return ""
+
     for field in fields:
-        if not isinstance(field, dict) or str(field.get("name") or "").strip().casefold() != "cliente":
+        if not isinstance(field, dict):
+            continue
+        if str(field.get("name") or "").strip().casefold() != "cliente":
             continue
         value = field.get("value")
         if value in (None, ""):
             return ""
+
+        field_id = str(field.get("id") or field.get("field_id") or "")
         options = (field.get("type_config") or {}).get("options") or []
+        if not options:
+            options = cliente_options_by_field_id.get(field_id, {})
+
         if isinstance(options, list):
-            for option in options:
-                if isinstance(option, dict) and str(option.get("id")) == str(value):
-                    return str(option.get("name") or "").strip()
+            options = {
+                str(option.get("id")): option.get("name") or option.get("label") or ""
+                for option in options
+                if isinstance(option, dict) and option.get("id") is not None
+            }
+        if isinstance(options, dict):
+            resolved = options.get(str(value))
+            if resolved not in (None, ""):
+                return str(resolved).strip()
+
+        field_type = str(field.get("type") or "").casefold()
+        if str(value).strip().isdigit() and field_type in ("", "drop_down") :
+            app.logger.warning(
+                "Campo Cliente com opção não resolvida (field_id=%s, value=%s).",
+                field_id or "não informado", value,
+            )
+            return ""
         return str(value).strip()
     return ""
+
+
+def _list_id_from_task(task):
+    """Obtém o ID da List de origem da tarefa."""
+    list_obj = task.get("list") or {}
+    value = list_obj.get("id") if isinstance(list_obj, dict) else list_obj
+    return str(value) if value not in (None, "") else ""
+
+
+def _carregar_opcoes_cliente_por_lista(session, list_ids):
+    """Busca definições do campo Cliente nas Lists e monta mapa ID da opção -> nome."""
+    options_by_field_id = {}
+    lists_ok = 0
+    lists_failed = 0
+    for list_id in sorted(set(list_ids)):
+        try:
+            payload = _get_json(session, f"{API_BASE}/list/{list_id}/field")
+            for field in payload.get("fields", []):
+                if not isinstance(field, dict):
+                    continue
+                if str(field.get("name") or "").strip().casefold() != "cliente":
+                    continue
+                field_id = str(field.get("id") or "")
+                options = (field.get("type_config") or {}).get("options") or []
+                if field_id and isinstance(options, list):
+                    options_by_field_id[field_id] = {
+                        str(option.get("id")): str(
+                            option.get("name") or option.get("label") or ""
+                        ).strip()
+                        for option in options
+                        if isinstance(option, dict)
+                        and option.get("id") is not None
+                        and (option.get("name") or option.get("label"))
+                    }
+            lists_ok += 1
+        except (requests.RequestException, ValueError) as exc:
+            lists_failed += 1
+            app.logger.warning(
+                "Não foi possível carregar campos personalizados da List %s (%s).",
+                list_id, type(exc).__name__,
+            )
+    app.logger.info(
+        "Metadados do campo Cliente: %s Lists consultadas, %s falhas, %s campos com opções.",
+        lists_ok, lists_failed, len(options_by_field_id),
+    )
+    return options_by_field_id
 
 
 def _is_inactive_status(status):
@@ -298,6 +368,7 @@ def buscar_tarefas_clickup():
         now = datetime.now(timezone.utc)
         cutoff_ms = int((now - timedelta(days=DIAS_MINIMOS)).timestamp() * 1000)
         critical = []
+        collected_list_ids = set()
         seen_ids = set()
         seen_page_signatures = set()
         page = 0
@@ -359,6 +430,9 @@ def buscar_tarefas_clickup():
             total_received += len(tasks)
 
             for task in tasks:
+                list_id = _list_id_from_task(task)
+                if list_id:
+                    collected_list_ids.add(list_id)
                 task_id = str(task.get("id") or task.get("custom_id") or "")
                 if task_id and task_id in seen_ids:
                     continue
@@ -394,7 +468,7 @@ def buscar_tarefas_clickup():
                     "criacao": created.strftime("%Y-%m-%d"),
                     "responsavel": ", ".join(responsible_names) or "Não atribuído",
                     "espaco": _space_name(task, spaces_by_id),
-                    "cliente": _cliente_value(task),
+                    "_cliente_task": task,
                     "url": str(task.get("url") or "#"),
                 })
             page += 1
@@ -405,6 +479,15 @@ def buscar_tarefas_clickup():
                     "Busca ClickUp em andamento: %s páginas consultadas; %s tarefas recebidas; %s tarefas críticas acumuladas.",
                     page, total_received, len(critical),
                 )
+        cliente_options_by_field_id = _carregar_opcoes_cliente_por_lista(
+            session, collected_list_ids
+        )
+        for item in critical:
+            task_payload = item.pop("_cliente_task", {})
+            item["cliente"] = _cliente_value(
+                task_payload, cliente_options_by_field_id
+            )
+
         return critical
     finally:
         session.close()
