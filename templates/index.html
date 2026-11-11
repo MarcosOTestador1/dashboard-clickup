@@ -52,7 +52,7 @@
           <input id="filtroGlobalCriacaoAte" class="filter-input mt-1" type="date">
         </label>
       </div>
-      <p class="text-gray-500 text-xs mt-2">Atualiza os indicadores e todos os gráficos. A tabela também mantém seus filtros individuais.</p>
+      <p class="text-gray-500 text-xs mt-2">Sem datas, aplica o filtro de antiguidade selecionado. Ao informar uma data inicial ou final, o período substitui a antiguidade e inclui tarefas mais recentes. Atualiza os indicadores e todos os gráficos.</p>
     </section>
 
     <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -215,9 +215,14 @@
     const dias = Number(el('filtroGlobalDias').value || 100);
     const de = el('filtroGlobalCriacaoDe').value;
     const ate = el('filtroGlobalCriacaoAte').value;
-    return todasTarefasCriticas.filter(t =>
-      Number(t.dias) > dias && (!de || t.criacao >= de) && (!ate || t.criacao <= ate)
-    );
+    const usaPeriodo = Boolean(de || ate);
+
+    // Ao informar qualquer data, o período substitui o filtro de antiguidade.
+    // Sem datas, mantém o padrão selecionado (mais de 100 dias).
+    return todasTarefasCriticas.filter(t => {
+      if (usaPeriodo) return (!de || t.criacao >= de) && (!ate || t.criacao <= ate);
+      return Number(t.dias) > dias;
+    });
   }
 
   function obterTarefasFiltradas() {
@@ -258,6 +263,12 @@
 
   function atualizarVisaoGlobal() {
     tarefasCriticas = obterTarefasGlobais();
+    const usaPeriodo = Boolean(el('filtroGlobalCriacaoDe').value || el('filtroGlobalCriacaoAte').value);
+    const dias = Number(el('filtroGlobalDias').value || 100);
+    const descricao = usaPeriodo
+      ? 'Tarefas abertas no período de criação selecionado.'
+      : `Somente tarefas com mais de ${dias} dias em aberto.`;
+    document.querySelector('#detalhamentoTitulo + p').textContent = descricao + ' A lista tem rolagem própria para economizar espaço.';
     chartSpaceFilter = '';
     chartClientFilter = null;
     atualizarKpis(tarefasCriticas);
@@ -372,7 +383,11 @@
   }
 
   function processarDashboard(tasks) {
-    todasTarefasCriticas = tasks.filter(t => Number(t.dias) > 100 && !/cancelad|cancelled|canceled|finalizad|conclu|complet|closed|done/i.test(String(t.status || '')));
+    // O backend entrega todas as tarefas abertas; a visão global aplica o
+    // padrão de >100 dias ou, quando informado, o período de criação.
+    todasTarefasCriticas = tasks.filter(t =>
+      !/cancelad|cancelled|canceled|finalizad|conclu|complet|closed|done/i.test(String(t.status || ''))
+    );
     atualizarVisaoGlobal();
   }
 
