@@ -872,6 +872,14 @@ def export_relatorios_xlsx():
 
     add_sheet("Por Espaço", ["Espaço", "Demandas", "Média de dias", "Mais antiga (dias)"],
               group_summary(groups["space"]), [36, 16, 18, 20])
+    client_tasks_by_space = {}
+    for item in valid_rows:
+        client = str(item.get("cliente") or "").strip()
+        if client and client.casefold() != "interno":
+            space = label(item.get("espaco"), "Espaço não identificado")
+            client_tasks_by_space.setdefault(space, []).append(item)
+    add_sheet("Clientes por Espaço", ["Espaço", "Solicitações de clientes", "Média de dias", "Mais antiga (dias)"],
+              group_summary(client_tasks_by_space), [36, 26, 18, 20])
     add_sheet("Por Cliente", ["Cliente / categoria", "Demandas", "Média de dias", "Mais antiga (dias)"],
               group_summary(groups["client"]), [36, 16, 18, 20])
     add_sheet("Por Responsável", ["Responsável", "Demandas", "Média de dias", "Mais antiga (dias)"],
