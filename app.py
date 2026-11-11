@@ -753,6 +753,160 @@ def export_xlsx():
     )
 
 
+@app.post("/api/export.relatorios.xlsx")
+def export_relatorios_xlsx():
+    """Exporta os quadros da aba Relatórios em planilhas separadas."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return jsonify({"error": "Exportação XLSX indisponível: dependência openpyxl não instalada."}), 503
+
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get("tasks")
+    if not isinstance(rows, list):
+        return jsonify({"error": "Não foi possível identificar as demandas para exportação."}), 400
+    if len(rows) > 20000:
+        return jsonify({"error": "A seleção excede o limite de 20.000 demandas por exportação."}), 413
+
+    def safe_cell(value):
+        if value is None:
+            return ""
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+        value = str(value)
+        return "'" + value if value.startswith(("=", "+", "-", "@")) else value
+
+    def age(item):
+        try:
+            return max(0, int(float(item.get("dias") or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def label(value, default="Não informado"):
+        value = str(value or "").strip()
+        return value if value else default
+
+    valid_rows = [item for item in rows if isinstance(item, dict)]
+    internal_rows = [
+        item for item in valid_rows
+        if not str(item.get("cliente") or "").strip()
+        or str(item.get("cliente") or "").strip().casefold() == "interno"
+    ]
+
+    groups = {"space": {}, "client": {}, "owner": {}, "status": {}}
+    for item in valid_rows:
+        client = label(item.get("cliente"), "Demandas internas")
+        values = {
+            "space": label(item.get("espaco")),
+            "client": client,
+            "owner": label(item.get("responsavel")),
+            "status": label(item.get("status"), "Sem status"),
+        }
+        for key, group_name in values.items():
+            groups[key].setdefault(group_name, []).append(item)
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+
+    def add_sheet(title, headers, data, widths=None, hyperlink_col=None):
+        sheet = workbook.create_sheet(title=title[:31])
+        sheet.append(headers)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="334155")
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        for values in data:
+            sheet.append([safe_cell(value) for value in values])
+            if hyperlink_col:
+                link_cell = sheet.cell(row=sheet.max_row, column=hyperlink_col)
+                link = str(link_cell.value or "").lstrip("'")
+                if link.startswith(("https://app.clickup.com/", "https://sharing.clickup.com/")):
+                    link_cell.hyperlink = link
+                    link_cell.style = "Hyperlink"
+        sheet.freeze_panes = "A2"
+        if sheet.max_row > 1:
+            sheet.auto_filter.ref = sheet.dimensions
+        sheet.row_dimensions[1].height = 30
+        for col, width in enumerate(widths or [24] * len(headers), start=1):
+            sheet.column_dimensions[get_column_letter(col)].width = width
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=(cell.column == 2))
+        return sheet
+
+    def group_summary(group):
+        result = []
+        for name, items in sorted(group.items(), key=lambda pair: (-len(pair[1]), pair[0].casefold())):
+            ages = [age(item) for item in items]
+            result.append([name, len(items), round(sum(ages) / len(ages)), max(ages)])
+        return result
+
+    total = len(valid_rows)
+    all_ages = [age(item) for item in valid_rows]
+    client_rows = [item for item in valid_rows if item not in internal_rows]
+    distinct_owners = {label(item.get("responsavel")) for item in valid_rows}
+
+    add_sheet("Resumo", ["Indicador", "Resultado"], [
+        ["Demandas abertas consideradas", total],
+        ["Média de dias em aberto", round(sum(all_ages) / total) if total else 0],
+        ["Demanda mais antiga (dias)", max(all_ages, default=0)],
+        ["Demandas internas", len(internal_rows)],
+        ["Solicitações de clientes", len(client_rows)],
+        ["Responsáveis envolvidos", len(distinct_owners)],
+    ], [42, 24])
+
+    aging_rows = []
+    bands = [
+        ("Até 30 dias", 0, 30),
+        ("31 a 60 dias", 31, 60),
+        ("61 a 100 dias", 61, 100),
+        ("101 a 150 dias", 101, 150),
+        ("151 a 200 dias", 151, 200),
+        ("Mais de 200 dias", 201, float("inf")),
+    ]
+    for name, low, high in bands:
+        aging_rows.append([name, sum(1 for item in valid_rows if low <= age(item) <= high)])
+    add_sheet("Envelhecimento", ["Faixa de dias em aberto", "Quantidade de demandas"], aging_rows, [30, 28])
+
+    add_sheet("Por Espaço", ["Espaço", "Demandas", "Média de dias", "Mais antiga (dias)"],
+              group_summary(groups["space"]), [36, 16, 18, 20])
+    add_sheet("Por Cliente", ["Cliente / categoria", "Demandas", "Média de dias", "Mais antiga (dias)"],
+              group_summary(groups["client"]), [36, 16, 18, 20])
+    add_sheet("Por Responsável", ["Responsável", "Demandas", "Média de dias", "Mais antiga (dias)"],
+              group_summary(groups["owner"]), [36, 16, 18, 20])
+
+    internal_ages = [age(item) for item in internal_rows]
+    add_sheet("Demandas Internas", ["Indicador", "Resultado"], [
+        ["Total de demandas internas", len(internal_rows)],
+        ["Participação no total (%)", round(len(internal_rows) / total * 100, 1) if total else 0],
+        ["Média de dias em aberto", round(sum(internal_ages) / len(internal_ages)) if internal_ages else 0],
+        ["Mais antiga (dias)", max(internal_ages, default=0)],
+    ], [36, 24])
+
+    add_sheet("Por Status", ["Status", "Demandas", "Média de dias", "Mais antiga (dias)"],
+              group_summary(groups["status"]), [32, 16, 18, 20])
+
+    fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
+    headers = ["ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
+               "Espaço do ClickUp", "Cliente", "Data de criação", "Link ClickUp"]
+    detail_rows = []
+    for item in sorted(valid_rows, key=age, reverse=True):
+        detail_rows.append([item.get(field, "") for field in fields])
+    detail_sheet = add_sheet("Detalhamento", headers, detail_rows,
+                             [18, 55, 22, 18, 32, 32, 26, 18, 48], hyperlink_col=9)
+    for row in detail_sheet.iter_rows(min_row=2):
+        row[3].number_format = '0 "dias"'
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    filename = f"relatorio_monitor_gargalos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(output, as_attachment=True, download_name=filename,
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
