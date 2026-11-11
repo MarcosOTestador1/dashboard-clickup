@@ -177,7 +177,7 @@
         <p class="text-sm text-gray-400 mt-1">Análises das demandas que continuam abertas e atendem aos filtros gerais selecionados. Demandas finalizadas e canceladas não entram nestes relatórios.</p>
         <div class="flex flex-wrap items-center justify-between gap-3 mt-4">
           <p id="relatorioResumo" class="text-sm text-blue-300">Aguardando dados…</p>
-          <button id="exportarRelatorio" type="button" class="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 px-3 py-2 rounded-lg text-sm font-medium">Exportar demandas do relatório (XLSX)</button>
+          <button id="exportarRelatorio" type="button" class="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 px-3 py-2 rounded-lg text-sm font-medium">Exportar todos os relatórios (XLSX)</button>
         </div>
       </div>
 
@@ -303,9 +303,11 @@
     const dias = Number(el('filtroGlobalDias').value || 100);
     const de = dataGlobalEmIso('filtroGlobalCriacaoDe', 'filtroGlobalCriacaoDeCalendario');
     const ate = dataGlobalEmIso('filtroGlobalCriacaoAte', 'filtroGlobalCriacaoAteCalendario');
-    return todasTarefasCriticas.filter(t =>
-      Number(t.dias) > dias && (!de || t.criacao >= de) && (!ate || t.criacao <= ate)
-    );
+    const usaPeriodo = Boolean(de || ate);
+    return todasTarefasCriticas.filter(t => {
+      if (usaPeriodo) return (!de || t.criacao >= de) && (!ate || t.criacao <= ate);
+      return Number(t.dias) > dias;
+    });
   }
 
   function obterTarefasFiltradas() {
@@ -714,7 +716,7 @@
     }
     btn.disabled = true; btn.textContent = 'Gerando XLSX…';
     try {
-      const response = await fetch('/api/export.xlsx', {
+      const response = await fetch('/api/export.relatorios.xlsx', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tasks: tarefasCriticas }), cache: 'no-store'
       });
@@ -723,9 +725,9 @@
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a'); link.href = url; link.download = 'relatorio_monitor_gargalos.xlsx';
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
-      mostrarMensagem(`${tarefasCriticas.length.toLocaleString('pt-BR')} demandas exportadas.`);
+      mostrarMensagem(`Arquivo gerado com 8 abas e ${tarefasCriticas.length.toLocaleString('pt-BR')} demandas detalhadas.`);
     } catch (error) { mostrarMensagem(error.message, true); }
-    finally { btn.disabled = false; btn.textContent = 'Exportar demandas do relatório (XLSX)'; }
+    finally { btn.disabled = false; btn.textContent = 'Exportar todos os relatórios (XLSX)'; }
   });
 
   el('atualizar').addEventListener('click', () => carregarDados(true));
