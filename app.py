@@ -228,6 +228,29 @@ def _space_name(task, spaces_by_id):
     return "Espaço não identificado"
 
 
+def _cliente_value(task):
+    """Extrai o campo personalizado Cliente, resolvendo opções de dropdown."""
+    direct = task.get("Cliente") or task.get("cliente")
+    if direct not in (None, ""):
+        return str(direct).strip()
+    fields = task.get("custom_fields") or []
+    if not isinstance(fields, list):
+        return ""
+    for field in fields:
+        if not isinstance(field, dict) or str(field.get("name") or "").strip().casefold() != "cliente":
+            continue
+        value = field.get("value")
+        if value in (None, ""):
+            return ""
+        options = (field.get("type_config") or {}).get("options") or []
+        if isinstance(options, list):
+            for option in options:
+                if isinstance(option, dict) and str(option.get("id")) == str(value):
+                    return str(option.get("name") or "").strip()
+        return str(value).strip()
+    return ""
+
+
 def _is_inactive_status(status):
     normalized = (status or "").lower().strip()
     return normalized in STATUS_INATIVOS or any(
@@ -371,6 +394,7 @@ def buscar_tarefas_clickup():
                     "criacao": created.strftime("%Y-%m-%d"),
                     "responsavel": ", ".join(responsible_names) or "Não atribuído",
                     "espaco": _space_name(task, spaces_by_id),
+                    "cliente": _cliente_value(task),
                     "url": str(task.get("url") or "#"),
                 })
             page += 1
@@ -547,9 +571,9 @@ def export_xlsx():
 
     headers = [
         "ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
-        "Espaço do ClickUp", "Data de criação", "Link ClickUp",
+        "Espaço do ClickUp", "Cliente", "Data de criação", "Link ClickUp",
     ]
-    fields = ["id", "name", "status", "dias", "responsavel", "espaco", "criacao", "url"]
+    fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
 
     workbook = Workbook()
     sheet = workbook.active
@@ -582,7 +606,7 @@ def export_xlsx():
             values[-1] = ""
 
         sheet.append(values)
-        link = sheet.cell(row=sheet.max_row, column=8)
+        link = sheet.cell(row=sheet.max_row, column=9)
         if values[-1]:
             link.hyperlink = values[-1]
             link.style = "Hyperlink"
@@ -594,7 +618,7 @@ def export_xlsx():
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     sheet.row_dimensions[1].height = 30
-    for index, width in enumerate([18, 55, 22, 18, 32, 32, 18, 48], start=1):
+    for index, width in enumerate([18, 55, 22, 18, 32, 32, 24, 18, 48], start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
