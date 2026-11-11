@@ -30,6 +30,11 @@
       <button id="atualizar" type="button" class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition">Atualizar dados</button>
     </header>
 
+    <nav class="flex flex-wrap gap-2" aria-label="Navegação do Monitor de Gargalos">
+      <button type="button" data-tab="dashboard" class="tab-button bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold">Visão geral</button>
+      <button type="button" data-tab="relatorios" class="tab-button bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700 px-4 py-2 rounded-lg text-sm font-semibold">Relatórios</button>
+    </nav>
+
     <div id="mensagem" role="status" aria-live="polite" class="hidden rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm"></div>
 
     <section class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow">
@@ -61,14 +66,14 @@
       <p class="text-gray-500 text-xs mt-2">Atualiza os indicadores e todos os gráficos. A tabela também mantém seus filtros individuais.</p>
     </section>
 
-    <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+    <section data-view="dashboard" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Total de Tarefas Críticas</p><h2 id="kpiTotal" class="text-3xl font-bold text-blue-400 mt-1">—</h2></div>
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Média de Dias Aberta</p><h2 id="kpiMedia" class="text-3xl font-bold text-yellow-400 mt-1">—</h2></div>
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Tarefa Mais Antiga</p><h2 id="kpiAntiga" class="text-3xl font-bold text-red-400 mt-1">—</h2></div>
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow"><p class="text-gray-400 text-sm font-medium">Responsáveis Envolvidos</p><h2 id="kpiResponsaveis" class="text-3xl font-bold text-green-400 mt-1">—</h2></div>
     </section>
 
-    <section class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+    <section data-view="dashboard" class="grid grid-cols-1 xl:grid-cols-2 gap-5">
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h2 class="text-lg font-semibold text-gray-200">Tarefas críticas por Espaço</h2>
@@ -99,7 +104,7 @@
       </div>
     </section>
 
-    <section class="bg-gray-800 rounded-xl border border-gray-700 shadow overflow-hidden">
+    <section data-view="dashboard" class="bg-gray-800 rounded-xl border border-gray-700 shadow overflow-hidden">
       <div class="p-5 border-b border-gray-700 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <div>
           <h2 id="detalhamentoTitulo" class="text-lg font-semibold text-gray-200">Detalhamento das Tarefas</h2>
@@ -164,6 +169,60 @@
         </table>
       </div>
     </section>
+
+
+    <section id="paginaRelatorios" data-view="relatorios" class="hidden space-y-5">
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow">
+        <h2 class="text-xl font-semibold text-white">Relatórios do passivo de demandas</h2>
+        <p class="text-sm text-gray-400 mt-1">Análises das demandas que continuam abertas e atendem aos filtros gerais selecionados. Demandas finalizadas e canceladas não entram nestes relatórios.</p>
+        <div class="flex flex-wrap items-center justify-between gap-3 mt-4">
+          <p id="relatorioResumo" class="text-sm text-blue-300">Aguardando dados…</p>
+          <button id="exportarRelatorio" type="button" class="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 px-3 py-2 rounded-lg text-sm font-medium">Exportar demandas do relatório (XLSX)</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0">
+          <h3 class="text-lg font-semibold mb-1">Envelhecimento das demandas</h3>
+          <p class="text-xs text-gray-400 mb-3">Distribuição por dias em aberto dentro do conjunto selecionado.</p>
+          <div class="relative h-72"><canvas id="relGraficoIdade"></canvas></div>
+        </div>
+        <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0">
+          <h3 class="text-lg font-semibold mb-1">Concentração por espaço</h3>
+          <p class="text-xs text-gray-400 mb-3">Espaços com maior volume de demandas críticas.</p>
+          <div class="relative h-72"><canvas id="relGraficoEspacos"></canvas></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow overflow-hidden">
+          <h3 class="text-lg font-semibold mb-3">Análise por cliente</h3>
+          <div class="table-scroll"><table class="w-full text-sm"><thead class="bg-gray-700 text-gray-200 text-xs uppercase"><tr><th class="p-3 text-left">Cliente / categoria</th><th class="p-3 text-right">Demandas</th><th class="p-3 text-right">Média de dias</th><th class="p-3 text-right">Mais antiga</th></tr></thead><tbody id="relTabelaClientes" class="divide-y divide-gray-700"></tbody></table></div>
+        </div>
+        <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow overflow-hidden">
+          <h3 class="text-lg font-semibold mb-3">Análise por responsável</h3>
+          <div class="table-scroll"><table class="w-full text-sm"><thead class="bg-gray-700 text-gray-200 text-xs uppercase"><tr><th class="p-3 text-left">Responsável</th><th class="p-3 text-right">Demandas</th><th class="p-3 text-right">Média de dias</th><th class="p-3 text-right">Mais antiga</th></tr></thead><tbody id="relTabelaResponsaveis" class="divide-y divide-gray-700"></tbody></table></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow overflow-hidden">
+          <h3 class="text-lg font-semibold mb-3">Demandas internas</h3>
+          <p class="text-xs text-gray-400 mb-3">Demandas sem cliente atribuído ou identificadas como internas.</p>
+          <div id="relResumoInternas" class="text-sm text-gray-200">—</div>
+        </div>
+        <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow overflow-hidden">
+          <h3 class="text-lg font-semibold mb-3">Concentração por status</h3>
+          <div class="table-scroll"><table class="w-full text-sm"><thead class="bg-gray-700 text-gray-200 text-xs uppercase"><tr><th class="p-3 text-left">Status</th><th class="p-3 text-right">Demandas</th><th class="p-3 text-right">Média de dias</th></tr></thead><tbody id="relTabelaStatus" class="divide-y divide-gray-700"></tbody></table></div>
+        </div>
+      </div>
+
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow">
+        <h3 class="text-lg font-semibold mb-1">Como interpretar</h3>
+        <p class="text-sm text-gray-400">Os relatórios consideram apenas o conjunto de demandas abertas que atende aos filtros gerais da página. A idade é calculada a partir da data de criação e do tempo em aberto informado pela coleta do ClickUp. Use a aba Visão geral para pesquisar tarefas individualmente e consultar os links no ClickUp.</p>
+      </div>
+    </section>
+
     <footer class="text-xs text-gray-500 text-center">Dashboard ClickUp · Dados atualizados sob demanda</footer>
   </main>
 <script>
@@ -171,6 +230,8 @@
   let chartResponsaveis = null;
   let chartStatus = null;
   let chartClientes = null;
+  let relChartIdade = null;
+  let relChartEspacos = null;
   let todasTarefasCriticas = [];
   let tarefasCriticas = [];
   let chartClientFilter = null;
@@ -290,6 +351,7 @@
     atualizarKpis(tarefasCriticas);
     preencherFiltros(tarefasCriticas);
     renderizarGraficos(tarefasCriticas);
+    renderizarRelatorios(tarefasCriticas);
     preencherTabela();
   }
 
@@ -396,6 +458,85 @@
         onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('status', statusRows[elements[0].index]?.[0] || ''); },
         plugins: commonPlugins, scales: commonScales }
     });
+  }
+
+  function agruparRelatorio(tasks, obterChave) {
+    const grupos = new Map();
+    tasks.forEach(task => {
+      const chave = obterChave(task) || 'Não informado';
+      if (!grupos.has(chave)) grupos.set(chave, []);
+      grupos.get(chave).push(task);
+    });
+    return [...grupos.entries()].map(([nome, itens]) => ({
+      nome, total: itens.length,
+      media: Math.round(itens.reduce((s, t) => s + Number(t.dias || 0), 0) / itens.length),
+      maximo: Math.max(...itens.map(t => Number(t.dias || 0)))
+    })).sort((a, b) => b.total - a.total || b.maximo - a.maximo);
+  }
+
+  function preencherTabelaRelatorio(id, rows, mostrarMaximo = true) {
+    const tbody = el(id);
+    tbody.replaceChildren();
+    if (!rows.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = mostrarMaximo ? 4 : 3;
+      td.className = 'p-4 text-center text-gray-400';
+      td.textContent = 'Nenhum registro para os filtros selecionados.';
+      tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    rows.forEach(row => {
+      const tr = document.createElement('tr');
+      [row.nome, row.total.toLocaleString('pt-BR'), `${row.media} dias`, ...(mostrarMaximo ? [`${row.maximo} dias`] : [])].forEach((value, index) => {
+        const td = document.createElement('td');
+        td.className = `p-3 ${index ? 'text-right tabular-nums' : 'text-gray-200'}`;
+        td.textContent = value; tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderizarRelatorios(tasks) {
+    const faixas = [
+      { nome: '101 a 150 dias', min: 101, max: 150 },
+      { nome: '151 a 200 dias', min: 151, max: 200 },
+      { nome: 'Mais de 200 dias', min: 201, max: Infinity }
+    ];
+    const faixaCounts = faixas.map(f => tasks.filter(t => Number(t.dias) >= f.min && Number(t.dias) <= f.max).length);
+    const espacos = agruparRelatorio(tasks, t => t.espaco || 'Espaço não identificado').slice(0, 10);
+    const clientes = agruparRelatorio(tasks, t => String(t.cliente || '').trim() ? t.cliente : 'Demandas internas');
+    const responsaveis = agruparRelatorio(tasks, t => t.responsavel || 'Não atribuído');
+    const status = agruparRelatorio(tasks, t => t.status || 'Sem status');
+    const internas = tasks.filter(t => classificarCliente(t.cliente) === 'Demandas internas');
+    const mediaInternas = internas.length ? Math.round(internas.reduce((s,t) => s + Number(t.dias || 0), 0) / internas.length) : 0;
+    el('relatorioResumo').textContent = `${tasks.length.toLocaleString('pt-BR')} demandas abertas consideradas nos relatórios.`;
+    el('relResumoInternas').textContent = `${internas.length.toLocaleString('pt-BR')} demandas internas (${tasks.length ? (internas.length / tasks.length * 100).toFixed(1).replace('.', ',') : '0,0'}% do total), com média de ${mediaInternas} dias em aberto.`;
+    preencherTabelaRelatorio('relTabelaClientes', clientes);
+    preencherTabelaRelatorio('relTabelaResponsaveis', responsaveis);
+    preencherTabelaRelatorio('relTabelaStatus', status, false);
+    if (relChartIdade) relChartIdade.destroy();
+    if (relChartEspacos) relChartEspacos.destroy();
+    const scales = { x: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 }, grid: { color: '#374151' } }, y: { ticks: { color: '#d1d5db' }, grid: { display: false } } };
+    relChartIdade = new Chart(el('relGraficoIdade').getContext('2d'), {
+      type: 'bar', data: { labels: faixas.map(f => f.nome), datasets: [{ data: faixaCounts, backgroundColor: ['#3b82f6','#f59e0b','#ef4444'], borderRadius: 5 }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.raw} demandas` } } }, scales }
+    });
+    relChartEspacos = new Chart(el('relGraficoEspacos').getContext('2d'), {
+      type: 'bar', data: { labels: espacos.map(r => r.nome), datasets: [{ data: espacos.map(r => r.total), backgroundColor: '#3b82f6', borderRadius: 5 }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.raw} demandas` } } }, scales }
+    });
+  }
+
+  function alternarAba(aba) {
+    document.querySelectorAll('[data-view]').forEach(section => section.classList.toggle('hidden', section.dataset.view !== aba));
+    document.querySelectorAll('.tab-button').forEach(button => {
+      const ativo = button.dataset.tab === aba;
+      button.className = ativo
+        ? 'tab-button bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold'
+        : 'tab-button bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700 px-4 py-2 rounded-lg text-sm font-semibold';
+    });
+    if (aba === 'relatorios') renderizarRelatorios(tarefasCriticas);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   function processarDashboard(tasks) {
@@ -559,6 +700,32 @@
     } catch (error) {
       mostrarMensagem(error.message || 'Falha ao exportar os dados.', true);
     } finally { btn.disabled = false; btn.textContent = 'Exportar XLSX'; }
+  });
+
+  document.querySelectorAll('.tab-button').forEach(button => {
+    button.addEventListener('click', () => alternarAba(button.dataset.tab));
+  });
+
+  el('exportarRelatorio').addEventListener('click', async () => {
+    const btn = el('exportarRelatorio');
+    if (!tarefasCriticas.length) {
+      mostrarMensagem('Não há demandas para exportar nos relatórios.', true);
+      return;
+    }
+    btn.disabled = true; btn.textContent = 'Gerando XLSX…';
+    try {
+      const response = await fetch('/api/export.xlsx', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tasks: tarefasCriticas }), cache: 'no-store'
+      });
+      if (!response.ok) throw new Error('Não foi possível gerar o arquivo XLSX.');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = url; link.download = 'relatorio_monitor_gargalos.xlsx';
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+      mostrarMensagem(`${tarefasCriticas.length.toLocaleString('pt-BR')} demandas exportadas.`);
+    } catch (error) { mostrarMensagem(error.message, true); }
+    finally { btn.disabled = false; btn.textContent = 'Exportar demandas do relatório (XLSX)'; }
   });
 
   el('atualizar').addEventListener('click', () => carregarDados(true));
