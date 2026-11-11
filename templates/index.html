@@ -46,13 +46,19 @@
           </select>
         </label>
         <label class="text-xs text-gray-400">Criada a partir de
-          <input id="filtroGlobalCriacaoDe" class="filter-input mt-1" type="date">
+          <div class="flex gap-2 mt-1">
+            <input id="filtroGlobalCriacaoDe" class="filter-input mt-0" type="text" inputmode="numeric" autocomplete="off" placeholder="dd/mm/aaaa" aria-label="Digite a data inicial no formato dia/mês/ano">
+            <input id="filtroGlobalCriacaoDeCalendario" class="filter-input mt-0 max-w-[54px] px-2" type="date" aria-label="Selecionar data inicial pelo calendário" title="Selecionar pelo calendário">
+          </div>
         </label>
         <label class="text-xs text-gray-400">Criada até
-          <input id="filtroGlobalCriacaoAte" class="filter-input mt-1" type="date">
+          <div class="flex gap-2 mt-1">
+            <input id="filtroGlobalCriacaoAte" class="filter-input mt-0" type="text" inputmode="numeric" autocomplete="off" placeholder="dd/mm/aaaa" aria-label="Digite a data final no formato dia/mês/ano">
+            <input id="filtroGlobalCriacaoAteCalendario" class="filter-input mt-0 max-w-[54px] px-2" type="date" aria-label="Selecionar data final pelo calendário" title="Selecionar pelo calendário">
+          </div>
         </label>
       </div>
-      <p class="text-gray-500 text-xs mt-2">Sem datas, aplica o filtro de antiguidade selecionado. Ao informar uma data inicial ou final, o período substitui a antiguidade e inclui tarefas mais recentes. Atualiza os indicadores e todos os gráficos.</p>
+      <p class="text-gray-500 text-xs mt-2">Atualiza os indicadores e todos os gráficos. A tabela também mantém seus filtros individuais.</p>
     </section>
 
     <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -75,7 +81,7 @@
           <h2 class="text-lg font-semibold text-gray-200">Comparativo por tipo de demanda</h2>
           <span class="text-xs text-gray-400">Clique em uma barra para filtrar a tabela</span>
         </div>
-        <div class="relative h-80"><canvas id="graficoClientes" aria-label="Demandas internas, solicitações de clientes e sem classificação"></canvas></div>
+        <div class="relative h-80"><canvas id="graficoClientes" aria-label="Demandas internas e solicitações de clientes"></canvas></div>
       </div>
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -207,22 +213,38 @@
 
   function classificarCliente(value) {
     const cliente = String(value ?? '').trim();
-    if (!cliente) return 'Sem classificação';
-    return norm(cliente) === 'interno' ? 'Demandas internas' : 'Solicitações de clientes';
+    // Sem cliente atribuído também é classificado como demanda interna.
+    if (!cliente || norm(cliente) === 'interno') return 'Demandas internas';
+    return 'Solicitações de clientes';
+  }
+
+  function dataGlobalEmIso(textId, calendarId) {
+    const digitada = el(textId).value.trim();
+    if (digitada) {
+      const match = digitada.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (!match) return '';
+      const [, dia, mes, ano] = match;
+      const iso = `${ano}-${mes}-${dia}`;
+      const data = new Date(`${iso}T00:00:00`);
+      if (Number.isNaN(data.getTime()) || data.getFullYear() !== Number(ano) ||
+          data.getMonth() + 1 !== Number(mes) || data.getDate() !== Number(dia)) return '';
+      return iso;
+    }
+    return el(calendarId).value || '';
+  }
+
+  function sincronizarCalendarioGlobal(textId, calendarId) {
+    const iso = dataGlobalEmIso(textId, calendarId);
+    el(calendarId).value = iso;
   }
 
   function obterTarefasGlobais() {
     const dias = Number(el('filtroGlobalDias').value || 100);
-    const de = el('filtroGlobalCriacaoDe').value;
-    const ate = el('filtroGlobalCriacaoAte').value;
-    const usaPeriodo = Boolean(de || ate);
-
-    // Ao informar qualquer data, o período substitui o filtro de antiguidade.
-    // Sem datas, mantém o padrão selecionado (mais de 100 dias).
-    return todasTarefasCriticas.filter(t => {
-      if (usaPeriodo) return (!de || t.criacao >= de) && (!ate || t.criacao <= ate);
-      return Number(t.dias) > dias;
-    });
+    const de = dataGlobalEmIso('filtroGlobalCriacaoDe', 'filtroGlobalCriacaoDeCalendario');
+    const ate = dataGlobalEmIso('filtroGlobalCriacaoAte', 'filtroGlobalCriacaoAteCalendario');
+    return todasTarefasCriticas.filter(t =>
+      Number(t.dias) > dias && (!de || t.criacao >= de) && (!ate || t.criacao <= ate)
+    );
   }
 
   function obterTarefasFiltradas() {
@@ -263,12 +285,6 @@
 
   function atualizarVisaoGlobal() {
     tarefasCriticas = obterTarefasGlobais();
-    const usaPeriodo = Boolean(el('filtroGlobalCriacaoDe').value || el('filtroGlobalCriacaoAte').value);
-    const dias = Number(el('filtroGlobalDias').value || 100);
-    const descricao = usaPeriodo
-      ? 'Tarefas abertas no período de criação selecionado.'
-      : `Somente tarefas com mais de ${dias} dias em aberto.`;
-    document.querySelector('#detalhamentoTitulo + p').textContent = descricao + ' A lista tem rolagem própria para economizar espaço.';
     chartSpaceFilter = '';
     chartClientFilter = null;
     atualizarKpis(tarefasCriticas);
@@ -289,7 +305,7 @@
     const fragment = document.createDocumentFragment();
     for (const task of filtered) {
       const tr = document.createElement('tr'); tr.className = 'hover:bg-gray-700/70 transition';
-      const values = [task.id, task.name, task.status, `${task.dias} dias`, task.responsavel, task.espaco, task.cliente || 'Sem classificação', task.criacao];
+      const values = [task.id, task.name, task.status, `${task.dias} dias`, task.responsavel, task.espaco, task.cliente || 'Demandas internas', task.criacao];
       values.forEach((value, index) => {
         const td = document.createElement('td'); td.className = 'p-3'; td.textContent = value ?? '';
         if (index === 0) td.classList.add('font-mono', 'text-blue-400', 'whitespace-nowrap');
@@ -330,7 +346,7 @@
 
   function renderizarGraficos(tasks) {
     const espacos = new Map(), responsaveis = new Map(), statusMap = new Map();
-    const clientes = new Map([['Demandas internas', 0], ['Solicitações de clientes', 0], ['Sem classificação', 0]]);
+    const clientes = new Map([['Demandas internas', 0], ['Solicitações de clientes', 0]]);
     tasks.forEach(t => {
       const space = t.espaco || 'Espaço não identificado';
       const owner = t.responsavel || 'Não atribuído';
@@ -354,7 +370,7 @@
 
     chartClientes = new Chart(el('graficoClientes').getContext('2d'), {
       type: 'bar',
-      data: { labels: clientRows.map(x => x[0]), datasets: [{ label: 'Demandas', data: clientRows.map(x => x[1]), backgroundColor: ['#3b82f6', '#10b981', '#f59e0b'], borderRadius: 5 }] },
+      data: { labels: clientRows.map(x => x[0]), datasets: [{ label: 'Demandas', data: clientRows.map(x => x[1]), backgroundColor: ['#3b82f6', '#10b981'], borderRadius: 5 }] },
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
         onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('cliente', clientRows[elements[0].index]?.[0] || ''); },
         plugins: commonPlugins, scales: commonScales }
@@ -383,11 +399,7 @@
   }
 
   function processarDashboard(tasks) {
-    // O backend entrega todas as tarefas abertas; a visão global aplica o
-    // padrão de >100 dias ou, quando informado, o período de criação.
-    todasTarefasCriticas = tasks.filter(t =>
-      !/cancelad|cancelled|canceled|finalizad|conclu|complet|closed|done/i.test(String(t.status || ''))
-    );
+    todasTarefasCriticas = tasks.filter(t => Number(t.dias) > 100 && !/cancelad|cancelled|canceled|finalizad|conclu|complet|closed|done/i.test(String(t.status || '')));
     atualizarVisaoGlobal();
   }
 
@@ -462,10 +474,46 @@
     el(id).addEventListener('input', atualizarVisaoGlobal);
     el(id).addEventListener('change', atualizarVisaoGlobal);
   });
+
+  [
+    ['filtroGlobalCriacaoDe', 'filtroGlobalCriacaoDeCalendario'],
+    ['filtroGlobalCriacaoAte', 'filtroGlobalCriacaoAteCalendario']
+  ].forEach(([textId, calendarId]) => {
+    el(textId).addEventListener('input', () => {
+      sincronizarCalendarioGlobal(textId, calendarId);
+      atualizarVisaoGlobal();
+    });
+    el(textId).addEventListener('change', () => {
+      sincronizarCalendarioGlobal(textId, calendarId);
+      atualizarVisaoGlobal();
+    });
+    el(calendarId).addEventListener('input', () => {
+      const iso = el(calendarId).value;
+      if (iso) {
+        const [ano, mes, dia] = iso.split('-');
+        el(textId).value = `${dia}/${mes}/${ano}`;
+      } else {
+        el(textId).value = '';
+      }
+      atualizarVisaoGlobal();
+    });
+    el(calendarId).addEventListener('change', () => {
+      const iso = el(calendarId).value;
+      if (iso) {
+        const [ano, mes, dia] = iso.split('-');
+        el(textId).value = `${dia}/${mes}/${ano}`;
+      } else {
+        el(textId).value = '';
+      }
+      atualizarVisaoGlobal();
+    });
+  });
   el('limparFiltrosGerais').addEventListener('click', () => {
     el('filtroGlobalDias').value = '100';
     el('filtroGlobalCriacaoDe').value = '';
     el('filtroGlobalCriacaoAte').value = '';
+    el('filtroGlobalCriacaoDeCalendario').value = '';
+    el('filtroGlobalCriacaoAteCalendario').value = '';
     atualizarVisaoGlobal();
   });
 
