@@ -368,11 +368,12 @@ def _is_inactive_status(status):
 
 
 def buscar_tarefas_clickup():
-    """Busca TODAS as páginas de tarefas abertas criadas há mais de 100 dias.
+    """Busca TODAS as páginas de tarefas abertas, independentemente da idade.
 
-    A função só retorna quando encontra uma página vazia. Se qualquer página
-    falhar ou a API repetir a mesma página, lança erro e não publica resultados
-    parciais no cache.
+    O filtro padrão de antiguidade é aplicado no dashboard. Assim, filtros por
+    data de criação podem consultar também tarefas com menos de 100 dias.
+    A função só retorna quando encontra uma página vazia; falhas não publicam
+    resultados parciais no cache.
     """
     token = (os.getenv("CLICKUP_API_TOKEN") or "").strip()
     if not token:
@@ -401,7 +402,6 @@ def buscar_tarefas_clickup():
             app.logger.warning("Não foi possível carregar a lista de Spaces: %s", type(exc).__name__)
 
         now = datetime.now(timezone.utc)
-        cutoff_ms = int((now - timedelta(days=DIAS_MINIMOS)).timestamp() * 1000)
         critical = []
         collected_list_ids = set()
         seen_ids = set()
@@ -423,7 +423,6 @@ def buscar_tarefas_clickup():
                             "page": page,
                             "limit": 100,
                             "subtasks": "true",
-                            "date_created_lt": cutoff_ms,
                             "include_closed": "false",
                         },
                     )
@@ -486,9 +485,6 @@ def buscar_tarefas_clickup():
                 except (TypeError, ValueError, OSError, OverflowError):
                     continue
                 days = max(0, (now - created).days)
-                if days <= DIAS_MINIMOS:
-                    continue
-
                 responsible_names = []
                 for assignee in (task.get("assignees") or []):
                     if isinstance(assignee, dict):
