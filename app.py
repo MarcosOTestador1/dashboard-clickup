@@ -229,8 +229,9 @@ def _space_name(task, spaces_by_id):
 
 
 def _cliente_value(task, cliente_options_by_field_id=None):
-    """Extrai Cliente e converte IDs de dropdown em nomes legíveis."""
+    """Extrai Cliente resolvendo dropdown por ID, orderindex ou posição da opção."""
     cliente_options_by_field_id = cliente_options_by_field_id or {}
+
     direct = task.get("Cliente")
     if direct not in (None, ""):
         return str(direct).strip()
@@ -244,34 +245,70 @@ def _cliente_value(task, cliente_options_by_field_id=None):
             continue
         if str(field.get("name") or "").strip().casefold() != "cliente":
             continue
+
         value = field.get("value")
-        if value in (None, ""):
+        if value is None or value == "":
             return ""
 
         field_id = str(field.get("id") or field.get("field_id") or "")
         options = (field.get("type_config") or {}).get("options") or []
         if not options:
-            options = cliente_options_by_field_id.get(field_id, {})
+            options = cliente_options_by_field_id.get(field_id, [])
 
         if isinstance(options, list):
-            options = {
-                str(option.get("id")): option.get("name") or option.get("label") or ""
-                for option in options
-                if isinstance(option, dict) and option.get("id") is not None
-            }
-        if isinstance(options, dict):
+            # O ClickUp pode devolver o valor do dropdown como posição numérica.
+            try:
+                numeric_value = int(value)
+            except (TypeError, ValueError):
+                numeric_value = None
+
+            # Primeiro tenta o identificador explícito; depois orderindex;
+            # por último a posição da opção na lista.
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                option_name = option.get("name") or option.get("label")
+                if not option_name:
+                    continue
+                if str(option.get("id", "")) == str(value):
+                    return str(option_name).strip()
+
+            if numeric_value is not None:
+                for option in options:
+                    if not isinstance(option, dict):
+                        continue
+                    orderindex = option.get("orderindex")
+                    try:
+                        if orderindex is not None and int(orderindex) == numeric_value:
+                            option_name = option.get("name") or option.get("label")
+                            if option_name:
+                                return str(option_name).strip()
+                    except (TypeError, ValueError):
+                        pass
+
+                if 0 <= numeric_value < len(options):
+                    option = options[numeric_value]
+                    if isinstance(option, dict):
+                        option_name = option.get("name") or option.get("label")
+                        if option_name:
+                            return str(option_name).strip()
+
+        elif isinstance(options, dict):
             resolved = options.get(str(value))
             if resolved not in (None, ""):
                 return str(resolved).strip()
 
+        # Texto livre deve ser preservado. Um número sem correspondência em
+        # dropdown fica sem classificação, sem inventar nome de cliente.
         field_type = str(field.get("type") or "").casefold()
-        if str(value).strip().isdigit() and field_type in ("", "drop_down") :
+        if field_type in ("drop_down", "dropdown") and str(value).strip().isdigit():
             app.logger.warning(
-                "Campo Cliente com opção não resolvida (field_id=%s, value=%s).",
+                "Opção do campo Cliente não resolvida (field_id=%s, value=%s).",
                 field_id or "não informado", value,
             )
             return ""
         return str(value).strip()
+
     return ""
 
 
@@ -283,10 +320,11 @@ def _list_id_from_task(task):
 
 
 def _carregar_opcoes_cliente_por_lista(session, list_ids):
-    """Busca definições do campo Cliente nas Lists e monta mapa ID da opção -> nome."""
+    """Carrega as opções completas do campo Cliente para cada List."""
     options_by_field_id = {}
     lists_ok = 0
     lists_failed = 0
+
     for list_id in sorted(set(list_ids)):
         try:
             payload = _get_json(session, f"{API_BASE}/list/{list_id}/field")
@@ -295,18 +333,14 @@ def _carregar_opcoes_cliente_por_lista(session, list_ids):
                     continue
                 if str(field.get("name") or "").strip().casefold() != "cliente":
                     continue
+
                 field_id = str(field.get("id") or "")
                 options = (field.get("type_config") or {}).get("options") or []
                 if field_id and isinstance(options, list):
-                    options_by_field_id[field_id] = {
-                        str(option.get("id")): str(
-                            option.get("name") or option.get("label") or ""
-                        ).strip()
-                        for option in options
-                        if isinstance(option, dict)
-                        and option.get("id") is not None
-                        and (option.get("name") or option.get("label"))
-                    }
+                    # Mantém id, orderindex e ordem original: os três formatos
+                    # podem ser relevantes para resolver o valor retornado pela API.
+                    options_by_field_id[field_id] = options
+
             lists_ok += 1
         except (requests.RequestException, ValueError) as exc:
             lists_failed += 1
@@ -314,6 +348,7 @@ def _carregar_opcoes_cliente_por_lista(session, list_ids):
                 "Não foi possível carregar campos personalizados da List %s (%s).",
                 list_id, type(exc).__name__,
             )
+
     app.logger.info(
         "Metadados do campo Cliente: %s Lists consultadas, %s falhas, %s campos com opções.",
         lists_ok, lists_failed, len(options_by_field_id),
