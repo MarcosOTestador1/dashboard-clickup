@@ -95,6 +95,13 @@
         </div>
         <div class="relative h-80"><canvas id="graficoResponsaveis" aria-label="Gráfico de barras dos dez responsáveis com mais tarefas"></canvas></div>
       </div>
+      <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h2 class="text-lg font-semibold text-gray-200">Solicitações de clientes por Espaço</h2>
+          <span class="text-xs text-gray-400">Somente demandas com cliente atribuído</span>
+        </div>
+        <div class="relative h-80"><canvas id="graficoSolicitacoesEspaco" aria-label="Gráfico de solicitações de clientes separadas por espaço"></canvas></div>
+      </div>
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow min-w-0 xl:col-span-2">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h2 class="text-lg font-semibold text-gray-200">Tarefas críticas por Status</h2>
@@ -228,6 +235,7 @@
 <script>
   let chartEspacos = null;
   let chartResponsaveis = null;
+  let chartSolicitacoesEspaco = null;
   let chartStatus = null;
   let chartClientes = null;
   let relChartIdade = null;
@@ -401,15 +409,23 @@
     chartClientFilter = null;
     if (tipo === 'cliente') chartClientFilter = valor;
     if (tipo === 'espaco') { el('filtroEspaco').value = valor; chartSpaceFilter = valor; }
+    if (tipo === 'solicitacoes_espaco') {
+      chartClientFilter = 'Solicitações de clientes';
+      el('filtroEspaco').value = valor;
+      chartSpaceFilter = valor;
+    }
     if (tipo === 'responsavel') el('filtroResponsavel').value = valor;
     if (tipo === 'status') el('filtroStatus').value = valor;
     preencherTabela();
-    mostrarMensagem(`Exibindo tarefas de ${tipo === 'espaco' ? 'espaço' : tipo === 'responsavel' ? 'responsável' : tipo === 'cliente' ? 'categoria de cliente' : 'status'}: ${valor}. Use “Limpar filtros” para voltar à lista completa.`);
+    const descricaoFiltro = tipo === 'solicitacoes_espaco' ? 'solicitações de clientes no espaço' :
+      tipo === 'espaco' ? 'espaço' : tipo === 'responsavel' ? 'responsável' :
+      tipo === 'cliente' ? 'categoria de cliente' : 'status';
+    mostrarMensagem(`Exibindo tarefas de ${descricaoFiltro}: ${valor}. Use “Limpar filtros” para voltar à lista completa.`);
     el('detalhamentoTitulo').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function renderizarGraficos(tasks) {
-    const espacos = new Map(), responsaveis = new Map(), statusMap = new Map();
+    const espacos = new Map(), responsaveis = new Map(), statusMap = new Map(), solicitacoesPorEspaco = new Map();
     const clientes = new Map([['Demandas internas', 0], ['Solicitações de clientes', 0]]);
     tasks.forEach(t => {
       const space = t.espaco || 'Espaço não identificado';
@@ -420,12 +436,16 @@
       statusMap.set(status, (statusMap.get(status) || 0) + 1);
       const category = classificarCliente(t.cliente);
       clientes.set(category, (clientes.get(category) || 0) + 1);
+      if (category === 'Solicitações de clientes') {
+        solicitacoesPorEspaco.set(space, (solicitacoesPorEspaco.get(space) || 0) + 1);
+      }
     });
     const spaceRows = [...espacos.entries()].sort((a,b) => b[1] - a[1]);
     const ownerRows = [...responsaveis.entries()].sort((a,b) => b[1] - a[1]).slice(0, 10);
     const statusRows = [...statusMap.entries()].sort((a,b) => b[1] - a[1]);
     const clientRows = [...clientes.entries()];
-    [chartEspacos, chartResponsaveis, chartStatus, chartClientes].forEach(chart => { if (chart) chart.destroy(); });
+    const clientSpaceRows = [...solicitacoesPorEspaco.entries()].sort((a,b) => b[1] - a[1]);
+    [chartEspacos, chartResponsaveis, chartStatus, chartClientes, chartSolicitacoesEspaco].forEach(chart => { if (chart) chart.destroy(); });
     const commonScales = {
       x: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 }, grid: { color: '#374151' } },
       y: { ticks: { color: '#d1d5db', autoSkip: false }, grid: { display: false } }
@@ -451,6 +471,18 @@
       data: { labels: ownerRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: ownerRows.map(x => x[1]), backgroundColor: '#10b981', borderRadius: 4 }] },
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
         onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('responsavel', ownerRows[elements[0].index]?.[0] || ''); },
+        plugins: commonPlugins, scales: commonScales }
+    });
+    chartSolicitacoesEspaco = new Chart(el('graficoSolicitacoesEspaco').getContext('2d'), {
+      type: 'bar',
+      data: { labels: clientSpaceRows.map(x => x[0]), datasets: [{
+        label: 'Solicitações de clientes', data: clientSpaceRows.map(x => x[1]),
+        backgroundColor: '#10b981', borderRadius: 4
+      }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        onClick: (_event, elements) => {
+          if (elements.length) aplicarFiltroGrafico('solicitacoes_espaco', clientSpaceRows[elements[0].index]?.[0] || '');
+        },
         plugins: commonPlugins, scales: commonScales }
     });
     chartStatus = new Chart(el('graficoStatus').getContext('2d'), {
