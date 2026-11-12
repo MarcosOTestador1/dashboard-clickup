@@ -2,6 +2,7 @@
 """Backend Flask do Dashboard ClickUp: filtro por data, retries e cache de contingência."""
 import logging
 import os
+import re
 import hmac
 import threading
 import time
@@ -881,6 +882,54 @@ def export_relatorios_xlsx():
                 cell.alignment = Alignment(vertical="top", wrap_text=(cell.column == 2))
         return sheet
 
+    detail_headers = ["ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
+                      "Espaço do ClickUp", "Cliente", "Data de criação", "Link ClickUp"]
+    detail_fields = ["id", "name", "status", "dias", "responsavel", "espaco",
+                     "cliente", "criacao", "url"]
+    detail_widths = [18, 55, 22, 18, 32, 32, 26, 18, 48]
+    used_detail_titles = set()
+
+    def unique_detail_title(prefix, value):
+        raw = f"{prefix} - {value}"
+        base = re.sub(r"[\\\\/*?:\\[\\]]", "-", raw).strip().strip("'")
+        base = base or "Detalhamento"
+        base = base[:31]
+        candidate = base
+        suffix = 2
+        while candidate.casefold() in used_detail_titles or candidate in workbook.sheetnames:
+            ending = f" ({suffix})"
+            candidate = base[:31 - len(ending)] + ending
+            suffix += 1
+        used_detail_titles.add(candidate.casefold())
+        return candidate
+
+    def add_detail_sheet(prefix, value, items, source_sheet=None, source_row=None):
+        detail_title = unique_detail_title(prefix, value)
+        ordered_items = sorted(items, key=age, reverse=True)
+        detail_data = [[item.get(field, "") for field in detail_fields] for item in ordered_items]
+        detail_sheet = add_sheet(detail_title, detail_headers, detail_data, detail_widths, hyperlink_col=9)
+        for row in detail_sheet.iter_rows(min_row=2):
+            row[3].number_format = '0 "dias"'
+        if source_sheet and source_row:
+            back = detail_sheet.cell(row=1, column=11, value="↩ Voltar ao relatório")
+            back.hyperlink = f"#'{source_sheet}'!A{source_row}"
+            back.style = "Hyperlink"
+        return detail_title
+
+    def add_group_report(title, headers, group, widths):
+        ordered_groups = sorted(group.items(), key=lambda pair: (-len(pair[1]), pair[0].casefold()))
+        summary_data = []
+        for name, items in ordered_groups:
+            ages = [age(item) for item in items]
+            summary_data.append([name, len(items), round(sum(ages) / len(ages)), max(ages), "Ver demandas"])
+        sheet = add_sheet(title, headers + ["Consultar"], summary_data, widths + [18])
+        for index, (name, items) in enumerate(ordered_groups, start=2):
+            detail_title = add_detail_sheet(title, name, items, title, index)
+            link_cell = sheet.cell(row=index, column=len(headers) + 1)
+            link_cell.hyperlink = f"#'{detail_title}'!A1"
+            link_cell.style = "Hyperlink"
+        return sheet
+
     def group_summary(group):
         result = []
         for name, items in sorted(group.items(), key=lambda pair: (-len(pair[1]), pair[0].casefold())):
@@ -902,6 +951,7 @@ def export_relatorios_xlsx():
         ["Responsáveis envolvidos", len(distinct_owners)],
     ], [42, 24])
 
+    aging_groups = {}
     aging_rows = []
     bands = [
         ("Até 30 dias", 0, 30),
@@ -912,48 +962,56 @@ def export_relatorios_xlsx():
         ("Mais de 200 dias", 201, float("inf")),
     ]
     for name, low, high in bands:
-        aging_rows.append([name, sum(1 for item in valid_rows if low <= age(item) <= high)])
-    add_sheet("Envelhecimento", ["Faixa de dias em aberto", "Quantidade de demandas"], aging_rows, [30, 28])
+        aging_groups[name] = [item for item in valid_rows if low <= age(item) <= high]
+        aging_rows.append([name, len(aging_groups[name]), "Ver demandas"])
+    aging_sheet = add_sheet("Envelhecimento",
+                            ["Faixa de dias em aberto", "Quantidade de demandas", "Consultar"],
+                            aging_rows, [30, 28, 18])
+    for index, (name, items) in enumerate(aging_groups.items(), start=2):
+        detail_title = add_detail_sheet("Envelhecimento", name, items, "Envelhecimento", index)
+        cell = aging_sheet.cell(row=index, column=3)
+        cell.hyperlink = f"#'{detail_title}'!A1"
+        cell.style = "Hyperlink"
 
-    add_sheet("Por Espaço", ["Espaço", "Demandas", "Média de dias", "Mais antiga (dias)"],
-              group_summary(groups["space"]), [36, 16, 18, 20])
+    add_group_report("Por Espaço", ["Espaço", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                     groups["space"], [36, 16, 18, 20])
     client_tasks_by_space = {}
     for item in valid_rows:
         client = str(item.get("cliente") or "").strip()
         if client and client.casefold() != "interno":
             space = label(item.get("espaco"), "Espaço não identificado")
             client_tasks_by_space.setdefault(space, []).append(item)
-    add_sheet("Clientes por Espaço", ["Espaço", "Solicitações de clientes", "Média de dias", "Mais antiga (dias)"],
-              group_summary(client_tasks_by_space), [36, 26, 18, 20])
-    add_sheet("Por Cliente", ["Cliente / categoria", "Demandas", "Média de dias", "Mais antiga (dias)"],
-              group_summary(groups["client"]), [36, 16, 18, 20])
-    add_sheet("Por Responsável", ["Responsável", "Demandas", "Média de dias", "Mais antiga (dias)"],
-              group_summary(groups["owner"]), [36, 16, 18, 20])
+    add_group_report("Clientes por Espaço",
+                     ["Espaço", "Solicitações de clientes", "Média de dias", "Mais antiga (dias)"],
+                     client_tasks_by_space, [36, 26, 18, 20])
+    add_group_report("Por Cliente", ["Cliente / categoria", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                     groups["client"], [36, 16, 18, 20])
+    add_group_report("Por Responsável", ["Responsável", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                     groups["owner"], [36, 16, 18, 20])
 
-    # Novo relatório: compara os dois tipos de demanda exibidos no dashboard.
-    # Mantém a regra já utilizada no resumo para separar demandas internas
-    # de solicitações de clientes.
-    demand_type_groups = {
+    internal_ages = [age(item) for item in internal_rows]
+    internal_sheet = add_sheet("Demandas Internas", ["Indicador", "Resultado", "Consultar"], [
+        ["Total de demandas internas", len(internal_rows), "Ver demandas"],
+        ["Participação no total (%)", round(len(internal_rows) / total * 100, 1) if total else 0, ""],
+        ["Média de dias em aberto", round(sum(internal_ages) / len(internal_ages)) if internal_ages else 0, ""],
+        ["Mais antiga (dias)", max(internal_ages, default=0), ""],
+    ], [36, 24, 18])
+    internal_detail = add_detail_sheet("Demandas Internas", "Todas", internal_rows, "Demandas Internas", 2)
+    internal_link = internal_sheet.cell(row=2, column=3)
+    internal_link.hyperlink = f"#'{internal_detail}'!A1"
+    internal_link.style = "Hyperlink"
+
+    add_group_report("Por Status", ["Status", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                     groups["status"], [32, 16, 18, 20])
+
+    # A nova aba compara as mesmas duas categorias usadas no resumo.
+    type_groups = {
         "Demandas internas": internal_rows,
         "Solicitações de clientes": client_rows,
     }
-    add_sheet(
-        "Por Tipo de Demanda",
-        ["Tipo de demanda", "Demandas", "Média de dias", "Mais antiga (dias)"],
-        group_summary(demand_type_groups),
-        [36, 16, 18, 20],
-    )
-
-    internal_ages = [age(item) for item in internal_rows]
-    add_sheet("Demandas Internas", ["Indicador", "Resultado"], [
-        ["Total de demandas internas", len(internal_rows)],
-        ["Participação no total (%)", round(len(internal_rows) / total * 100, 1) if total else 0],
-        ["Média de dias em aberto", round(sum(internal_ages) / len(internal_ages)) if internal_ages else 0],
-        ["Mais antiga (dias)", max(internal_ages, default=0)],
-    ], [36, 24])
-
-    add_sheet("Por Status", ["Status", "Demandas", "Média de dias", "Mais antiga (dias)"],
-              group_summary(groups["status"]), [32, 16, 18, 20])
+    add_group_report("Por Tipo de Demanda",
+                     ["Tipo de demanda", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                     type_groups, [36, 16, 18, 20])
 
     fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
     headers = ["ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
