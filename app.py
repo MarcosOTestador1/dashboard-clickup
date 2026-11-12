@@ -733,59 +733,63 @@ def export_xlsx():
         "ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
         "Espaço do ClickUp", "Cliente", "Data de criação", "Link ClickUp",
     ]
-    fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
+    if "detalhamento" in selected_reports:
+        fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Detalhamento das Tarefas"
-    sheet.append(headers)
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Detalhamento das Tarefas"
+        sheet.append(headers)
 
-    for cell in sheet[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="334155")
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="334155")
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-    def safe_cell(value):
-        if value is None:
-            return ""
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return value
-        value = str(value)
-        # Mitiga fórmulas maliciosas em valores exportados.
-        return "'" + value if value.startswith(("=", "+", "-", "@")) else value
+        def safe_cell(value):
+            if value is None:
+                return ""
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return value
+            value = str(value)
+            # Mitiga fórmulas maliciosas em valores exportados.
+            return "'" + value if value.startswith(("=", "+", "-", "@")) else value
 
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        values = [safe_cell(item.get(field, "")) for field in fields]
-        url = str(item.get("url") or "")
-        if not (
-            url.startswith("https://app.clickup.com/")
-            or url.startswith("https://sharing.clickup.com/")
-        ):
-            values[-1] = ""
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            values = [safe_cell(item.get(field, "")) for field in fields]
+            url = str(item.get("url") or "")
+            if not (
+                url.startswith("https://app.clickup.com/")
+                or url.startswith("https://sharing.clickup.com/")
+            ):
+                values[-1] = ""
 
-        sheet.append(values)
-        link = sheet.cell(row=sheet.max_row, column=9)
-        if values[-1]:
-            link.hyperlink = values[-1]
-            link.style = "Hyperlink"
+            sheet.append(values)
+            link = sheet.cell(row=sheet.max_row, column=9)
+            if values[-1]:
+                link.hyperlink = values[-1]
+                link.style = "Hyperlink"
 
-        days_cell = sheet.cell(row=sheet.max_row, column=4)
-        if isinstance(days_cell.value, (int, float)):
-            days_cell.number_format = '0 "dias"'
+            days_cell = sheet.cell(row=sheet.max_row, column=4)
+            if isinstance(days_cell.value, (int, float)):
+                days_cell.number_format = '0 "dias"'
 
-    sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = sheet.dimensions
-    sheet.row_dimensions[1].height = 30
-    for index, width in enumerate([18, 55, 22, 18, 32, 32, 24, 18, 48], start=1):
-        sheet.column_dimensions[get_column_letter(index)].width = width
-    for row in sheet.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = Alignment(
-                vertical="top",
-                wrap_text=(cell.column == 2),
-            )
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        sheet.row_dimensions[1].height = 30
+        for index, width in enumerate([18, 55, 22, 18, 32, 32, 24, 18, 48], start=1):
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(
+                    vertical="top",
+                    wrap_text=(cell.column == 2),
+                )
+
+    if not workbook.sheetnames:
+        return jsonify({"error": "Nenhuma aba foi gerada. Confira os relatórios selecionados."}), 400
 
     output = BytesIO()
     workbook.save(output)
@@ -813,6 +817,19 @@ def export_relatorios_xlsx():
     rows = payload.get("tasks")
     if not isinstance(rows, list):
         return jsonify({"error": "Não foi possível identificar as demandas para exportação."}), 400
+    available_reports = {
+        "resumo", "envelhecimento", "espaco", "clientes_espaco", "cliente",
+        "responsavel", "status", "internas", "tipo", "detalhamento"
+    }
+    requested_reports = payload.get("reports")
+    if requested_reports is None:
+        selected_reports = set(available_reports)  # Compatibilidade com chamadas antigas.
+    elif not isinstance(requested_reports, list) or not requested_reports:
+        return jsonify({"error": "Selecione pelo menos um relatório para exportação."}), 400
+    else:
+        selected_reports = set(requested_reports)
+        if not selected_reports.issubset(available_reports):
+            return jsonify({"error": "A seleção contém um tipo de relatório inválido."}), 400
     if len(rows) > 20000:
         return jsonify({"error": "A seleção excede o limite de 20.000 demandas por exportação."}), 413
 
@@ -948,87 +965,98 @@ def export_relatorios_xlsx():
     client_rows = [item for item in valid_rows if item not in internal_rows]
     distinct_owners = {label(item.get("responsavel")) for item in valid_rows}
 
-    add_sheet("Resumo", ["Indicador", "Resultado"], [
-        ["Demandas abertas consideradas", total],
-        ["Média de dias em aberto", round(sum(all_ages) / total) if total else 0],
-        ["Demanda mais antiga (dias)", max(all_ages, default=0)],
-        ["Demandas internas", len(internal_rows)],
-        ["Solicitações de clientes", len(client_rows)],
-        ["Responsáveis envolvidos", len(distinct_owners)],
-    ], [42, 24])
+    if "resumo" in selected_reports:
+        add_sheet("Resumo", ["Indicador", "Resultado"], [
+            ["Demandas abertas consideradas", total],
+            ["Média de dias em aberto", round(sum(all_ages) / total) if total else 0],
+            ["Demanda mais antiga (dias)", max(all_ages, default=0)],
+            ["Demandas internas", len(internal_rows)],
+            ["Solicitações de clientes", len(client_rows)],
+            ["Responsáveis envolvidos", len(distinct_owners)],
+        ], [42, 24])
 
-    aging_groups = {}
-    aging_rows = []
-    bands = [
-        ("Até 30 dias", 0, 30),
-        ("31 a 60 dias", 31, 60),
-        ("61 a 100 dias", 61, 100),
-        ("101 a 150 dias", 101, 150),
-        ("151 a 200 dias", 151, 200),
-        ("Mais de 200 dias", 201, float("inf")),
-    ]
-    for name, low, high in bands:
-        aging_groups[name] = [item for item in valid_rows if low <= age(item) <= high]
-        aging_rows.append([name, len(aging_groups[name]), "Ver demandas"])
-    aging_sheet = add_sheet("Envelhecimento",
-                            ["Faixa de dias em aberto", "Quantidade de demandas", "Consultar"],
-                            aging_rows, [30, 28, 18])
-    for index, (name, items) in enumerate(aging_groups.items(), start=2):
-        detail_title = add_detail_sheet("Envelhecimento", name, items, "Envelhecimento", index)
-        cell = aging_sheet.cell(row=index, column=3)
-        cell.hyperlink = f"#'{detail_title}'!A1"
-        cell.style = "Hyperlink"
+    if "envelhecimento" in selected_reports:
+        aging_groups = {}
+        aging_rows = []
+        bands = [
+            ("Até 30 dias", 0, 30),
+            ("31 a 60 dias", 31, 60),
+            ("61 a 100 dias", 61, 100),
+            ("101 a 150 dias", 101, 150),
+            ("151 a 200 dias", 151, 200),
+            ("Mais de 200 dias", 201, float("inf")),
+        ]
+        for name, low, high in bands:
+            aging_groups[name] = [item for item in valid_rows if low <= age(item) <= high]
+            aging_rows.append([name, len(aging_groups[name]), "Ver demandas"])
+        aging_sheet = add_sheet("Envelhecimento",
+                                ["Faixa de dias em aberto", "Quantidade de demandas", "Consultar"],
+                                aging_rows, [30, 28, 18])
+        for index, (name, items) in enumerate(aging_groups.items(), start=2):
+            detail_title = add_detail_sheet("Envelhecimento", name, items, "Envelhecimento", index)
+            cell = aging_sheet.cell(row=index, column=3)
+            cell.hyperlink = f"#'{detail_title}'!A1"
+            cell.style = "Hyperlink"
 
-    add_group_report("Por Espaço", ["Espaço", "Demandas", "Média de dias", "Mais antiga (dias)"],
-                     groups["space"], [36, 16, 18, 20])
-    client_tasks_by_space = {}
-    for item in valid_rows:
-        client = str(item.get("cliente") or "").strip()
-        if client and client.casefold() != "interno":
-            space = label(item.get("espaco"), "Espaço não identificado")
-            client_tasks_by_space.setdefault(space, []).append(item)
-    add_group_report("Clientes por Espaço",
-                     ["Espaço", "Solicitações de clientes", "Média de dias", "Mais antiga (dias)"],
-                     client_tasks_by_space, [36, 26, 18, 20])
-    add_group_report("Por Cliente", ["Cliente / categoria", "Demandas", "Média de dias", "Mais antiga (dias)"],
-                     groups["client"], [36, 16, 18, 20])
-    add_group_report("Por Responsável", ["Responsável", "Demandas", "Média de dias", "Mais antiga (dias)"],
-                     groups["owner"], [36, 16, 18, 20])
+    if "espaco" in selected_reports:
+        add_group_report("Por Espaço", ["Espaço", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                         groups["space"], [36, 16, 18, 20])
+    if "clientes_espaco" in selected_reports:
+        client_tasks_by_space = {}
+        for item in valid_rows:
+            client = str(item.get("cliente") or "").strip()
+            if client and client.casefold() != "interno":
+                space = label(item.get("espaco"), "Espaço não identificado")
+                client_tasks_by_space.setdefault(space, []).append(item)
+        add_group_report("Clientes por Espaço",
+                         ["Espaço", "Solicitações de clientes", "Média de dias", "Mais antiga (dias)"],
+                         client_tasks_by_space, [36, 26, 18, 20])
+    if "cliente" in selected_reports:
+        add_group_report("Por Cliente", ["Cliente / categoria", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                         groups["client"], [36, 16, 18, 20])
 
-    internal_ages = [age(item) for item in internal_rows]
-    internal_sheet = add_sheet("Demandas Internas", ["Indicador", "Resultado", "Consultar"], [
-        ["Total de demandas internas", len(internal_rows), "Ver demandas"],
-        ["Participação no total (%)", round(len(internal_rows) / total * 100, 1) if total else 0, ""],
-        ["Média de dias em aberto", round(sum(internal_ages) / len(internal_ages)) if internal_ages else 0, ""],
-        ["Mais antiga (dias)", max(internal_ages, default=0), ""],
-    ], [36, 24, 18])
-    internal_detail = add_detail_sheet("Demandas Internas", "Todas", internal_rows, "Demandas Internas", 2)
-    internal_link = internal_sheet.cell(row=2, column=3)
-    internal_link.hyperlink = f"#'{internal_detail}'!A1"
-    internal_link.style = "Hyperlink"
+    if "responsavel" in selected_reports:
+        add_group_report("Por Responsável", ["Responsável", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                         groups["owner"], [36, 16, 18, 20])
 
-    add_group_report("Por Status", ["Status", "Demandas", "Média de dias", "Mais antiga (dias)"],
-                     groups["status"], [32, 16, 18, 20])
+    if "internas" in selected_reports:
+        internal_ages = [age(item) for item in internal_rows]
+        internal_sheet = add_sheet("Demandas Internas", ["Indicador", "Resultado", "Consultar"], [
+            ["Total de demandas internas", len(internal_rows), "Ver demandas"],
+            ["Participação no total (%)", round(len(internal_rows) / total * 100, 1) if total else 0, ""],
+            ["Média de dias em aberto", round(sum(internal_ages) / len(internal_ages)) if internal_ages else 0, ""],
+            ["Mais antiga (dias)", max(internal_ages, default=0), ""],
+        ], [36, 24, 18])
+        internal_detail = add_detail_sheet("Demandas Internas", "Todas", internal_rows, "Demandas Internas", 2)
+        internal_link = internal_sheet.cell(row=2, column=3)
+        internal_link.hyperlink = f"#'{internal_detail}'!A1"
+        internal_link.style = "Hyperlink"
 
-    # A nova aba compara as mesmas duas categorias usadas no resumo.
-    type_groups = {
-        "Demandas internas": internal_rows,
-        "Solicitações de clientes": client_rows,
-    }
-    add_group_report("Por Tipo de Demanda",
-                     ["Tipo de demanda", "Demandas", "Média de dias", "Mais antiga (dias)"],
-                     type_groups, [36, 16, 18, 20])
+    if "status" in selected_reports:
+        add_group_report("Por Status", ["Status", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                         groups["status"], [32, 16, 18, 20])
 
-    fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
-    headers = ["ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
-               "Espaço do ClickUp", "Cliente", "Data de criação", "Link ClickUp"]
-    detail_rows = []
-    for item in sorted(valid_rows, key=age, reverse=True):
-        detail_rows.append([item.get(field, "") for field in fields])
-    detail_sheet = add_sheet("Detalhamento", headers, detail_rows,
-                             [18, 55, 22, 18, 32, 32, 26, 18, 48], hyperlink_col=9)
-    for row in detail_sheet.iter_rows(min_row=2):
-        row[3].number_format = '0 "dias"'
+    if "tipo" in selected_reports:
+        # A nova aba compara as mesmas duas categorias usadas no resumo.
+        type_groups = {
+            "Demandas internas": internal_rows,
+            "Solicitações de clientes": client_rows,
+        }
+        add_group_report("Por Tipo de Demanda",
+                         ["Tipo de demanda", "Demandas", "Média de dias", "Mais antiga (dias)"],
+                         type_groups, [36, 16, 18, 20])
+
+    if "detalhamento" in selected_reports:
+        fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
+        headers = ["ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
+                   "Espaço do ClickUp", "Cliente", "Data de criação", "Link ClickUp"]
+        detail_rows = []
+        for item in sorted(valid_rows, key=age, reverse=True):
+            detail_rows.append([item.get(field, "") for field in fields])
+        detail_sheet = add_sheet("Detalhamento", headers, detail_rows,
+                                 [18, 55, 22, 18, 32, 32, 26, 18, 48], hyperlink_col=9)
+        for row in detail_sheet.iter_rows(min_row=2):
+            row[3].number_format = '0 "dias"'
 
     output = BytesIO()
     workbook.save(output)
