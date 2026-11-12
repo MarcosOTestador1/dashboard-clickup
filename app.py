@@ -891,9 +891,15 @@ def export_relatorios_xlsx():
 
     def unique_detail_title(prefix, value):
         raw = f"{prefix} - {value}"
-        base = re.sub(r"[\\\\/*?:\\[\\]]", "-", raw).strip().strip("'")
-        base = base or "Detalhamento"
-        base = base[:31]
+        # O Excel proíbe : \\ / ? * [ ] em nomes de abas.
+        # Também removemos caracteres de controle e limitamos o nome a 31 caracteres.
+        invalid_sheet_chars = set('\\\\/:*?[]')
+        cleaned = "".join(
+            "-" if char in invalid_sheet_chars or ord(char) < 32 else char
+            for char in raw
+        )
+        base = cleaned.strip().strip("'") or "Detalhamento"
+        base = base[:31].rstrip("'") or "Detalhamento"
         candidate = base
         suffix = 2
         while candidate.casefold() in used_detail_titles or candidate in workbook.sheetnames:
