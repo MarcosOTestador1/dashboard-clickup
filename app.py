@@ -930,6 +930,20 @@ def export_relatorios_xlsx():
     add_sheet("Por Responsável", ["Responsável", "Demandas", "Média de dias", "Mais antiga (dias)"],
               group_summary(groups["owner"]), [36, 16, 18, 20])
 
+    # Novo relatório: compara os dois tipos de demanda exibidos no dashboard.
+    # Mantém a regra já utilizada no resumo para separar demandas internas
+    # de solicitações de clientes.
+    demand_type_groups = {
+        "Demandas internas": internal_rows,
+        "Solicitações de clientes": client_rows,
+    }
+    add_sheet(
+        "Por Tipo de Demanda",
+        ["Tipo de demanda", "Demandas", "Média de dias", "Mais antiga (dias)"],
+        group_summary(demand_type_groups),
+        [36, 16, 18, 20],
+    )
+
     internal_ages = [age(item) for item in internal_rows]
     add_sheet("Demandas Internas", ["Indicador", "Resultado"], [
         ["Total de demandas internas", len(internal_rows)],
