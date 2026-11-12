@@ -24,7 +24,7 @@
     <header class="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-gray-800 p-5 md:p-6 rounded-xl shadow-lg border border-gray-700">
       <div>
         <h1 class="text-2xl font-bold text-white">📊 Monitor de Gargalos - ClickUp</h1>
-        <p class="text-gray-400 text-sm mt-1">Acompanhamento de tarefas abertas há mais de 100 dias</p>
+        <p class="text-gray-400 text-sm mt-1">Acompanhamento de todas as demandas abertas do workspace</p>
         <p id="ultimaAtualizacao" class="text-gray-500 text-xs mt-2">Carregando dados do ClickUp…</p>
       </div>
       <button id="atualizar" type="button" class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition">Atualizar dados</button>
@@ -45,6 +45,9 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
         <label class="text-xs text-gray-400">Tarefas abertas há
           <select id="filtroGlobalDias" class="filter-input mt-1">
+            <option value="">Todas as tarefas</option>
+            <option value="30">Mais de 30 dias</option>
+            <option value="50">Mais de 50 dias</option>
             <option value="100">Mais de 100 dias</option>
             <option value="150">Mais de 150 dias</option>
             <option value="200">Mais de 200 dias</option>
@@ -115,7 +118,7 @@
       <div class="p-5 border-b border-gray-700 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <div>
           <h2 id="detalhamentoTitulo" class="text-lg font-semibold text-gray-200">Detalhamento das Tarefas</h2>
-          <p class="text-gray-400 text-sm mt-1">Somente tarefas com mais de 100 dias em aberto. A lista tem rolagem própria para economizar espaço.</p>
+          <p class="text-gray-400 text-sm mt-1">Todas as demandas abertas que atendem aos filtros selecionados. A lista tem rolagem própria para economizar espaço.</p>
           <p id="contadorTabela" class="text-blue-300 text-xs mt-2">Aguardando dados…</p>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -308,13 +311,14 @@
   }
 
   function obterTarefasGlobais() {
-    const dias = Number(el('filtroGlobalDias').value || 100);
+    const valorDias = el('filtroGlobalDias').value;
+    const dias = valorDias === '' ? null : Number(valorDias);
     const de = dataGlobalEmIso('filtroGlobalCriacaoDe', 'filtroGlobalCriacaoDeCalendario');
     const ate = dataGlobalEmIso('filtroGlobalCriacaoAte', 'filtroGlobalCriacaoAteCalendario');
     const usaPeriodo = Boolean(de || ate);
     return todasTarefasCriticas.filter(t => {
       if (usaPeriodo) return (!de || t.criacao >= de) && (!ate || t.criacao <= ate);
-      return Number(t.dias) > dias;
+      return dias === null || Number(t.dias) > dias;
     });
   }
 
@@ -368,7 +372,7 @@
   function preencherTabela() {
     const filtered = obterTarefasFiltradas();
     const tbody = el('tabelaCorpo'); tbody.replaceChildren();
-    el('contadorTabela').textContent = `${filtered.length.toLocaleString('pt-BR')} de ${tarefasCriticas.length.toLocaleString('pt-BR')} tarefas críticas`;
+    el('contadorTabela').textContent = `${filtered.length.toLocaleString('pt-BR')} de ${tarefasCriticas.length.toLocaleString('pt-BR')} demandas abertas`;
     if (!filtered.length) {
       const tr = document.createElement('tr'); const td = document.createElement('td');
       td.colSpan = 9; td.className = 'p-5 text-center text-gray-400'; td.textContent = 'Nenhuma tarefa corresponde aos filtros selecionados.';
@@ -574,7 +578,7 @@
   }
 
   function processarDashboard(tasks) {
-    todasTarefasCriticas = tasks.filter(t => Number(t.dias) > 100 && !/cancelad|cancelled|canceled|finalizad|conclu|complet|closed|done/i.test(String(t.status || '')));
+    todasTarefasCriticas = tasks.filter(t => !/cancelad|cancelled|canceled|finalizad|conclu|complet|closed|done/i.test(String(t.status || '')));
     atualizarVisaoGlobal();
   }
 
@@ -684,7 +688,7 @@
     });
   });
   el('limparFiltrosGerais').addEventListener('click', () => {
-    el('filtroGlobalDias').value = '100';
+    el('filtroGlobalDias').value = '';
     el('filtroGlobalCriacaoDe').value = '';
     el('filtroGlobalCriacaoAte').value = '';
     el('filtroGlobalCriacaoDeCalendario').value = '';
