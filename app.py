@@ -5,6 +5,7 @@ import os
 import hmac
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
@@ -27,6 +28,10 @@ READ_TIMEOUT = 12
 MAX_RETRIES = 3
 PAGE_RETRIES = 6
 CACHE_TTL_SECONDS = 300
+CLIENTE_FIELDS_CACHE_TTL_SECONDS = 1800
+CLIENTE_FIELDS_MAX_WORKERS = 4
+_cliente_fields_cache = {}  # list_id -> (cached_at, options_by_field_id)
+_cliente_fields_cache_lock = threading.Lock()
 # Não limitamos a quantidade de páginas: a busca só termina quando o ClickUp
 # devolver uma página vazia. A atualização roda em segundo plano.
 
@@ -319,38 +324,67 @@ def _list_id_from_task(task):
     return str(value) if value not in (None, "") else ""
 
 
+def _buscar_opcoes_cliente_lista(list_id, token):
+    """Consulta os metadados de uma List usando sessão própria da thread."""
+    session = requests.Session()
+    session.headers.update({"Authorization": token, "Accept": "application/json"})
+    try:
+        payload = _get_json(session, f"{API_BASE}/list/{list_id}/field")
+        result = {}
+        for field in payload.get("fields", []):
+            if not isinstance(field, dict):
+                continue
+            if str(field.get("name") or "").strip().casefold() != "cliente":
+                continue
+            field_id = str(field.get("id") or "")
+            options = (field.get("type_config") or {}).get("options") or []
+            if field_id and isinstance(options, list):
+                result[field_id] = options
+        return list_id, result, None
+    except (requests.RequestException, ValueError) as exc:
+        return list_id, {}, exc
+    finally:
+        session.close()
+
+
 def _carregar_opcoes_cliente_por_lista(session, list_ids):
-    """Carrega as opções completas do campo Cliente para cada List."""
+    """Carrega opções do campo Cliente em paralelo e reutiliza metadados recentes."""
+    token = (os.getenv("CLICKUP_API_TOKEN") or "").strip()
+    now = time.time()
     options_by_field_id = {}
-    lists_ok = 0
+    lists_to_fetch = []
+
+    with _cliente_fields_cache_lock:
+        for list_id in sorted(set(list_ids)):
+            cached = _cliente_fields_cache.get(str(list_id))
+            if cached and now - cached[0] < CLIENTE_FIELDS_CACHE_TTL_SECONDS:
+                options_by_field_id.update(cached[1])
+            else:
+                lists_to_fetch.append(str(list_id))
+
+    lists_ok = len(set(list_ids)) - len(lists_to_fetch)
     lists_failed = 0
-
-    for list_id in sorted(set(list_ids)):
-        try:
-            payload = _get_json(session, f"{API_BASE}/list/{list_id}/field")
-            for field in payload.get("fields", []):
-                if not isinstance(field, dict):
+    if lists_to_fetch:
+        # Limite conservador para acelerar metadados sem disparar excesso de chamadas.
+        with ThreadPoolExecutor(max_workers=CLIENTE_FIELDS_MAX_WORKERS) as executor:
+            futures = [executor.submit(_buscar_opcoes_cliente_lista, list_id, token)
+                       for list_id in lists_to_fetch]
+            for future in as_completed(futures):
+                list_id, result, error = future.result()
+                if error:
+                    lists_failed += 1
+                    app.logger.warning(
+                        "Não foi possível carregar campos personalizados da List %s (%s).",
+                        list_id, type(error).__name__,
+                    )
                     continue
-                if str(field.get("name") or "").strip().casefold() != "cliente":
-                    continue
-
-                field_id = str(field.get("id") or "")
-                options = (field.get("type_config") or {}).get("options") or []
-                if field_id and isinstance(options, list):
-                    # Mantém id, orderindex e ordem original: os três formatos
-                    # podem ser relevantes para resolver o valor retornado pela API.
-                    options_by_field_id[field_id] = options
-
-            lists_ok += 1
-        except (requests.RequestException, ValueError) as exc:
-            lists_failed += 1
-            app.logger.warning(
-                "Não foi possível carregar campos personalizados da List %s (%s).",
-                list_id, type(exc).__name__,
-            )
+                lists_ok += 1
+                options_by_field_id.update(result)
+                with _cliente_fields_cache_lock:
+                    _cliente_fields_cache[list_id] = (time.time(), result)
 
     app.logger.info(
-        "Metadados do campo Cliente: %s Lists consultadas, %s falhas, %s campos com opções.",
+        "Metadados do campo Cliente: %s Lists atendidas por cache/consulta, %s falhas, %s campos com opções.",
         lists_ok, lists_failed, len(options_by_field_id),
     )
     return options_by_field_id
@@ -401,6 +435,8 @@ def buscar_tarefas_clickup():
         except (requests.RequestException, ValueError) as exc:
             app.logger.warning("Não foi possível carregar a lista de Spaces: %s", type(exc).__name__)
 
+        collection_started = time.perf_counter()
+        pagination_started = collection_started
         now = datetime.now(timezone.utc)
         critical = []
         collected_list_ids = set()
@@ -408,7 +444,7 @@ def buscar_tarefas_clickup():
         seen_page_signatures = set()
         page = 0
         total_received = 0
-        app.logger.info("Iniciando busca completa de tarefas antigas no workspace %s.", team.get("id"))
+        app.logger.info("Iniciando busca completa de tarefas abertas no workspace %s.", team.get("id"))
 
         while True:
             # A falha em uma página não reinicia a coleta desde a página zero.
@@ -448,9 +484,10 @@ def buscar_tarefas_clickup():
             tasks = payload.get("tasks", [])
             if not tasks:
                 app.logger.info(
-                    "Busca completa finalizada: %s tarefas recebidas, %s tarefas críticas após filtros, %s páginas.",
+                    "Busca completa finalizada: %s tarefas recebidas, %s tarefas abertas após exclusão de status inativos, %s páginas.",
                     total_received, len(critical), page,
                 )
+                app.logger.info("Tempo de paginação do ClickUp: %.2fs.", time.perf_counter() - pagination_started)
                 break
 
             # Protege contra uma API que, por erro, devolva indefinidamente a mesma página.
@@ -510,15 +547,21 @@ def buscar_tarefas_clickup():
                     "Busca ClickUp em andamento: %s páginas consultadas; %s tarefas recebidas; %s tarefas críticas acumuladas.",
                     page, total_received, len(critical),
                 )
+        metadata_started = time.perf_counter()
         cliente_options_by_field_id = _carregar_opcoes_cliente_por_lista(
             session, collected_list_ids
         )
+        app.logger.info("Tempo de metadados de Cliente: %.2fs.", time.perf_counter() - metadata_started)
         for item in critical:
             task_payload = item.pop("_cliente_task", {})
             item["cliente"] = _cliente_value(
                 task_payload, cliente_options_by_field_id
             )
 
+        app.logger.info(
+            "Tempo total da coleta ClickUp (sem persistência Supabase): %.2fs; tarefas abertas: %s.",
+            time.perf_counter() - collection_started, len(critical),
+        )
         return critical
     finally:
         session.close()
@@ -534,11 +577,13 @@ def _refresh_worker():
         updated_at = datetime.now(timezone.utc).isoformat()
         # A coleta só é publicada após terminar todas as páginas. O banco é atualizado
         # antes do cache em memória para manter o último snapshot persistido íntegro.
+        persistence_started = time.perf_counter()
         try:
             salvar_cache_supabase(tasks, updated_at)
+            app.logger.info("Tempo de persistência no Supabase: %.2fs.", time.perf_counter() - persistence_started)
         except Exception as db_exc:
             # O dashboard continua funcional mesmo se o Supabase estiver temporariamente indisponível.
-            app.logger.warning("Falha ao persistir cache no Supabase (%s); mantendo cache em memória.", type(db_exc).__name__)
+            app.logger.exception("Falha ao persistir cache no Supabase após %.2fs; mantendo cache em memória.", time.perf_counter() - persistence_started)
         with _cache_lock:
             _cache.update(at=time.time(), tasks=tasks, updated_at=updated_at)
         _last_refresh_error = None
