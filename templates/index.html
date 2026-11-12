@@ -185,9 +185,35 @@
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow">
         <h2 class="text-xl font-semibold text-white">Relatórios do passivo de demandas</h2>
         <p class="text-sm text-gray-400 mt-1">Análises das demandas que continuam abertas e atendem aos filtros gerais selecionados. Demandas finalizadas e canceladas não entram nestes relatórios.</p>
-        <div class="flex flex-wrap items-center justify-between gap-3 mt-4">
+        <div class="mt-4 space-y-3">
           <p id="relatorioResumo" class="text-sm text-blue-300">Aguardando dados…</p>
-          <button id="exportarRelatorio" type="button" class="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 px-3 py-2 rounded-lg text-sm font-medium">Exportar todos os relatórios (XLSX)</button>
+          <div class="rounded-lg border border-gray-700 bg-gray-900/60 p-4 space-y-3">
+            <div>
+              <h3 class="font-semibold text-gray-100">Escolha os relatórios para exportar</h3>
+              <p class="text-sm text-gray-400 mt-1">Você pode selecionar <strong class="text-blue-300">um ou mais relatórios</strong> para gerar no mesmo arquivo Excel. Os filtros gerais aplicados no painel serão respeitados.</p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button id="selecionarTodosRelatorios" type="button" class="border border-gray-600 hover:bg-gray-700 px-3 py-1.5 rounded-lg text-xs">Selecionar todos</button>
+              <button id="limparSelecaoRelatorios" type="button" class="border border-gray-600 hover:bg-gray-700 px-3 py-1.5 rounded-lg text-xs">Limpar seleção</button>
+              <span id="contadorRelatoriosSelecionados" class="text-xs text-blue-300 self-center">0 relatórios selecionados</span>
+            </div>
+            <div id="listaRelatoriosExportacao" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="resumo" checked> Resumo geral</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="envelhecimento" checked> Envelhecimento das demandas</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="espaco" checked> Por espaço</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="clientes_espaco" checked> Clientes por espaço</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="cliente" checked> Por cliente</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="responsavel" checked> Por responsável</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="status" checked> Por status</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="internas" checked> Demandas internas</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="tipo" checked> Por tipo de demanda</label>
+              <label class="flex items-center gap-2 text-sm"><input class="relatorio-opcao accent-blue-500" type="checkbox" value="detalhamento" checked> Detalhamento completo das tarefas</label>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-gray-700">
+              <p class="text-xs text-gray-400">A planilha terá somente as abas dos relatórios selecionados.</p>
+              <button id="exportarRelatorio" type="button" class="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 px-4 py-2 rounded-lg text-sm font-semibold">Exportar relatórios selecionados (XLSX)</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -744,26 +770,52 @@
     button.addEventListener('click', () => alternarAba(button.dataset.tab));
   });
 
+  const opcoesRelatorios = [...document.querySelectorAll('.relatorio-opcao')];
+  function atualizarContadorRelatorios() {
+    const total = opcoesRelatorios.filter(input => input.checked).length;
+    el('contadorRelatoriosSelecionados').textContent = `${total} ${total === 1 ? 'relatório selecionado' : 'relatórios selecionados'}`;
+    el('exportarRelatorio').disabled = total === 0;
+  }
+  opcoesRelatorios.forEach(input => input.addEventListener('change', atualizarContadorRelatorios));
+  el('selecionarTodosRelatorios').addEventListener('click', () => {
+    opcoesRelatorios.forEach(input => input.checked = true);
+    atualizarContadorRelatorios();
+  });
+  el('limparSelecaoRelatorios').addEventListener('click', () => {
+    opcoesRelatorios.forEach(input => input.checked = false);
+    atualizarContadorRelatorios();
+  });
+  atualizarContadorRelatorios();
+
   el('exportarRelatorio').addEventListener('click', async () => {
     const btn = el('exportarRelatorio');
+    const selectedReports = opcoesRelatorios.filter(input => input.checked).map(input => input.value);
     if (!tarefasCriticas.length) {
       mostrarMensagem('Não há demandas para exportar nos relatórios.', true);
+      return;
+    }
+    if (!selectedReports.length) {
+      mostrarMensagem('Selecione pelo menos um relatório para continuar.', true);
       return;
     }
     btn.disabled = true; btn.textContent = 'Gerando XLSX…';
     try {
       const response = await fetch('/api/export.relatorios.xlsx', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tasks: tarefasCriticas }), cache: 'no-store'
+        body: JSON.stringify({ tasks: tarefasCriticas, reports: selectedReports }), cache: 'no-store'
       });
-      if (!response.ok) throw new Error('Não foi possível gerar o arquivo XLSX.');
+      if (!response.ok) {
+        let detail = 'Não foi possível gerar o arquivo XLSX.';
+        try { const payload = await response.json(); detail = payload.error || detail; } catch (_) {}
+        throw new Error(detail);
+      }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a'); link.href = url; link.download = 'relatorio_monitor_gargalos.xlsx';
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
-      mostrarMensagem(`Arquivo gerado com 8 abas e ${tarefasCriticas.length.toLocaleString('pt-BR')} demandas detalhadas.`);
+      mostrarMensagem(`Arquivo gerado com ${selectedReports.length} ${selectedReports.length === 1 ? 'relatório selecionado' : 'relatórios selecionados'} e ${tarefasCriticas.length.toLocaleString('pt-BR')} demandas consideradas.`);
     } catch (error) { mostrarMensagem(error.message, true); }
-    finally { btn.disabled = false; btn.textContent = 'Exportar todos os relatórios (XLSX)'; }
+    finally { btn.disabled = false; btn.textContent = 'Exportar relatórios selecionados (XLSX)'; atualizarContadorRelatorios(); }
   });
 
   el('atualizar').addEventListener('click', () => carregarDados(true));
