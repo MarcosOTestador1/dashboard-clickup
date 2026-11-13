@@ -180,7 +180,6 @@
       </div>
     </section>
 
-
     <section id="paginaRelatorios" data-view="relatorios" class="hidden space-y-5">
       <div class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow">
         <h2 class="text-xl font-semibold text-white">Relatórios do passivo de demandas</h2>
@@ -276,7 +275,7 @@
   let sortDirection = 'desc';
   let chartSpaceFilter = '';
   const el = (id) => document.getElementById(id);
-  const norm = (value) => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').trim();
+  const norm = (value) => String(value ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLocaleLowerCase('pt-BR').trim();
 
   function mostrarMensagem(texto, erro = false) {
     const box = el('mensagem');
@@ -311,7 +310,6 @@
 
   function classificarCliente(value) {
     const cliente = String(value ?? '').trim();
-    // Sem cliente atribuído também é classificado como demanda interna.
     if (!cliente || norm(cliente) === 'interno') return 'Demandas internas';
     return 'Solicitações de clientes';
   }
@@ -433,7 +431,6 @@
   }
 
   function aplicarFiltroGrafico(tipo, valor) {
-    // Um clique no gráfico passa a mostrar exatamente o conjunto daquele segmento.
     ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => { el(id).value = ''; });
     chartSpaceFilter = '';
     chartClientFilter = null;
@@ -446,8 +443,7 @@
     }
     if (tipo === 'responsavel') el('filtroResponsavel').value = valor;
     if (tipo === 'status') el('filtroStatus').value = valor;
-    // O ranking acompanha a categoria escolhida no gráfico de tipo de demanda.
-    // Para os demais tipos de clique, volta a considerar todas as tarefas do filtro global.
+
     const tarefasDoRanking = chartClientFilter
       ? tarefasCriticas.filter(t => classificarCliente(t.cliente) === chartClientFilter)
       : tarefasCriticas;
@@ -509,21 +505,21 @@
       type: 'bar',
       data: { labels: clientRows.map(x => x[0]), datasets: [{ label: 'Demandas', data: clientRows.map(x => x[1]), backgroundColor: ['#3b82f6', '#10b981'], borderRadius: 5 }] },
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('cliente', clientRows[elements[0].index]?.[0] || ''); },
+        onClick: (_event, elements, chart) => { if (elements.length) aplicarFiltroGrafico('cliente', chart.data.labels[elements[0].index]); },
         plugins: commonPlugins, scales: commonScales }
     });
     chartEspacos = new Chart(el('graficoEspacos').getContext('2d'), {
       type: 'bar',
       data: { labels: spaceRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: spaceRows.map(x => x[1]), backgroundColor: '#3b82f6', borderRadius: 4 }] },
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('espaco', spaceRows[elements[0].index]?.[0] || ''); },
+        onClick: (_event, elements, chart) => { if (elements.length) aplicarFiltroGrafico('espaco', chart.data.labels[elements[0].index]); },
         plugins: commonPlugins, scales: commonScales }
     });
     chartResponsaveis = new Chart(el('graficoResponsaveis').getContext('2d'), {
       type: 'bar',
       data: { labels: ownerRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: ownerRows.map(x => x[1]), backgroundColor: '#10b981', borderRadius: 4 }] },
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('responsavel', ownerRows[elements[0].index]?.[0] || ''); },
+        onClick: (_event, elements, chart) => { if (elements.length) aplicarFiltroGrafico('responsavel', chart.data.labels[elements[0].index]); },
         plugins: commonPlugins, scales: commonScales }
     });
     chartSolicitacoesEspaco = new Chart(el('graficoSolicitacoesEspaco').getContext('2d'), {
@@ -533,8 +529,8 @@
         backgroundColor: '#10b981', borderRadius: 4
       }] },
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => {
-          if (elements.length) aplicarFiltroGrafico('solicitacoes_espaco', clientSpaceRows[elements[0].index]?.[0] || '');
+        onClick: (_event, elements, chart) => {
+          if (elements.length) aplicarFiltroGrafico('solicitacoes_espaco', chart.data.labels[elements[0].index]);
         },
         plugins: commonPlugins, scales: commonScales }
     });
@@ -542,7 +538,7 @@
       type: 'bar',
       data: { labels: statusRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: statusRows.map(x => x[1]), backgroundColor: '#a78bfa', borderRadius: 4 }] },
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('status', statusRows[elements[0].index]?.[0] || ''); },
+        onClick: (_event, elements, chart) => { if (elements.length) aplicarFiltroGrafico('status', chart.data.labels[elements[0].index]); },
         plugins: commonPlugins, scales: commonScales }
     });
   }
@@ -640,7 +636,7 @@
     try {
       let url = `/api/tasks${forceRefresh ? '?refresh=1' : ''}`;
       let payload = null;
-      const deadline = Date.now() + 10 * 60 * 1000; // aguarda até 10 min pela coleta completa
+      const deadline = Date.now() + 10 * 60 * 1000;
 
       while (Date.now() < deadline) {
         const response = await fetch(url, { cache: 'no-store' });
@@ -650,21 +646,18 @@
           throw new Error(payload.error || 'Não foi possível carregar os dados.');
         }
 
-        // O backend pode informar que a coleta ainda está rodando.
-        // Não mostrar [] como se fosse o resultado final.
         if (payload.refreshing === true || payload.complete === false) {
           btn.textContent = 'Buscando todas as tarefas…';
-          mostrarMensagem('A coleta do ClickUp ainda está em andamento. Os resultados não serão tratados como completos até a finalização.');
+          mostrarMensagem('A coleta do ClickUp ainda está em andamento.');
           await new Promise(resolve => setTimeout(resolve, 2500));
-          url = '/api/tasks'; // não iniciar outra atualização; apenas consultar o estado
+          url = '/api/tasks';
           continue;
         }
-
         break;
       }
 
       if (!payload || payload.refreshing === true || payload.complete === false) {
-        throw new Error('A coleta ainda não terminou. Nenhum resultado parcial foi apresentado como completo; tente consultar novamente em instantes.');
+        throw new Error('A coleta ainda não terminou.');
       }
 
       if (!Array.isArray(payload.tasks)) {
@@ -677,14 +670,13 @@
       mostrarMensagem(`${payload.tasks.length.toLocaleString('pt-BR')} tarefas recebidas${payload.cached ? ' do cache' : ' do ClickUp'}.`);
     } catch (error) {
       mostrarMensagem(error.message || 'Erro ao carregar dados. Tente novamente.', true);
-      // Não apagar uma tabela já carregada por uma falha transitória.
       if (!tarefasCriticas.length) {
         el('tabelaCorpo').replaceChildren();
         const tr = document.createElement('tr');
         const td = document.createElement('td');
         td.colSpan = 9;
         td.className = 'p-4 text-center text-yellow-300';
-        td.textContent = 'Aguardando uma coleta concluída do ClickUp. Ainda não é possível confirmar o total de tarefas.';
+        td.textContent = 'Aguardando uma coleta concluída do ClickUp.';
         tr.appendChild(td);
         el('tabelaCorpo').appendChild(tr);
       }
@@ -783,7 +775,7 @@
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a'); link.href = objectUrl; link.download = filename;
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(objectUrl);
-      mostrarMensagem(`Exportação concluída: ${selectedTasks.length.toLocaleString('pt-BR')} tarefas exportadas conforme os filtros e a ordenação atuais.`);
+      mostrarMensagem(`Exportação concluída: ${selectedTasks.length.toLocaleString('pt-BR')} tarefas exportadas.`);
     } catch (error) {
       mostrarMensagem(error.message || 'Falha ao exportar os dados.', true);
     } finally { btn.disabled = false; btn.textContent = 'Exportar XLSX'; }
@@ -836,7 +828,7 @@
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a'); link.href = url; link.download = 'relatorio_monitor_gargalos.xlsx';
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
-      mostrarMensagem(`Arquivo gerado com ${selectedReports.length} ${selectedReports.length === 1 ? 'relatório selecionado' : 'relatórios selecionados'} e ${tarefasCriticas.length.toLocaleString('pt-BR')} demandas consideradas.`);
+      mostrarMensagem(`Arquivo gerado com sucesso.`);
     } catch (error) { mostrarMensagem(error.message, true); }
     finally { btn.disabled = false; btn.textContent = 'Exportar relatórios selecionados (XLSX)'; atualizarContadorRelatorios(); }
   });
