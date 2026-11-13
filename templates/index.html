@@ -446,12 +446,35 @@
     }
     if (tipo === 'responsavel') el('filtroResponsavel').value = valor;
     if (tipo === 'status') el('filtroStatus').value = valor;
+    // O ranking acompanha a categoria escolhida no gráfico de tipo de demanda.
+    // Para os demais tipos de clique, volta a considerar todas as tarefas do filtro global.
+    const tarefasDoRanking = chartClientFilter
+      ? tarefasCriticas.filter(t => classificarCliente(t.cliente) === chartClientFilter)
+      : tarefasCriticas;
+    atualizarRankingResponsaveis(tarefasDoRanking);
     preencherTabela();
     const descricaoFiltro = tipo === 'solicitacoes_espaco' ? 'solicitações de clientes no espaço' :
       tipo === 'espaco' ? 'espaço' : tipo === 'responsavel' ? 'responsável' :
       tipo === 'cliente' ? 'categoria de cliente' : 'status';
     mostrarMensagem(`Exibindo tarefas de ${descricaoFiltro}: ${valor}. Use “Limpar filtros” para voltar à lista completa.`);
     el('detalhamentoTitulo').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function atualizarRankingResponsaveis(tasks) {
+    const responsaveis = new Map();
+    tasks.forEach(t => {
+      const owner = t.responsavel || 'Não atribuído';
+      responsaveis.set(owner, (responsaveis.get(owner) || 0) + 1);
+    });
+    const ownerRows = [...responsaveis.entries()]
+      .sort((a,b) => b[1] - a[1])
+      .slice(0, 10);
+
+    if (chartResponsaveis) {
+      chartResponsaveis.data.labels = ownerRows.map(x => x[0]);
+      chartResponsaveis.data.datasets[0].data = ownerRows.map(x => x[1]);
+      chartResponsaveis.update();
+    }
   }
 
   function renderizarGraficos(tasks) {
