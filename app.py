@@ -33,8 +33,6 @@ CLIENTE_FIELDS_CACHE_TTL_SECONDS = 1800
 CLIENTE_FIELDS_MAX_WORKERS = 4
 _cliente_fields_cache = {}  # list_id -> (cached_at, options_by_field_id)
 _cliente_fields_cache_lock = threading.Lock()
-# Não limitamos a quantidade de páginas: a busca só termina quando o ClickUp
-# devolver uma página vazia. A atualização roda em segundo plano.
 
 STATUS_INATIVOS = {
     "cancelado", "cancelada", "cancelados", "canceladas",
@@ -51,7 +49,6 @@ _db_cache_loaded = False
 _db_cache_lock = threading.Lock()
 _progress_lock = threading.Lock()
 _progress = {"tasks": [], "page": 0, "received": 0, "active": False}
-
 
 
 def _database_url():
@@ -73,7 +70,6 @@ def _db_connect():
 
 
 def carregar_cache_supabase():
-    """Carrega o último cache persistido; não falha a aplicação se o DB estiver indisponível."""
     global _db_cache_loaded
     if _db_cache_loaded:
         return
@@ -110,28 +106,20 @@ def carregar_cache_supabase():
                             "Cache persistido carregado do Supabase: %s tarefas.",
                             len(tasks),
                         )
-                else:
-                    app.logger.info(
-                        "Supabase ainda não possui um cache completo para carregar."
-                    )
             finally:
                 conn.close()
         except Exception:
-            app.logger.exception(
-                "Não foi possível carregar o cache do Supabase. Erro detalhado:"
-            )
+            app.logger.exception("Não foi possível carregar o cache do Supabase.")
             _db_cache_loaded = False
             return
         _db_cache_loaded = True
 
+
 def salvar_cache_supabase(tasks, updated_at):
-    """Persiste somente uma coleta completa na tabela criada no Supabase."""
     conn = _db_connect()
     if conn is None:
-        app.logger.warning("DATABASE_URL não configurada; resultados não serão persistidos entre reinicializações.")
         return False
     try:
-        # A coluna updated_at é TIMESTAMPTZ; convertê-la para datetime com fuso.
         parsed_updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
         with conn:
             with conn.cursor() as cur:
@@ -151,33 +139,21 @@ def salvar_cache_supabase(tasks, updated_at):
 
 
 def _safe_json(response):
-    """Valida HTTP e JSON, evitando tratar HTML de erro como JSON."""
     response.raise_for_status()
     try:
         payload = response.json()
     except (requests.exceptions.JSONDecodeError, ValueError) as exc:
-        content_type = response.headers.get("Content-Type", "")
-        app.logger.warning(
-            "Resposta não-JSON do ClickUp (HTTP %s, Content-Type %s).",
-            response.status_code, content_type
-        )
         raise ValueError("O ClickUp retornou uma resposta que não é JSON válido.") from exc
-
     if not isinstance(payload, dict):
         raise ValueError("Resposta inesperada da API do ClickUp.")
     return payload
 
 
 def _get_json(session, url, params=None):
-    """Consulta a API com timeout por página e novas tentativas para falhas transitórias."""
     last_error = None
     for attempt in range(MAX_RETRIES):
         try:
-            response = session.get(
-                url,
-                params=params,
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-            )
+            response = session.get(url, params=params, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
             transient = response.status_code == 429 or 500 <= response.status_code <= 599
             if transient and attempt < MAX_RETRIES - 1:
                 retry_after = response.headers.get("Retry-After")
@@ -185,10 +161,6 @@ def _get_json(session, url, params=None):
                     delay = min(30.0, max(1.0, float(retry_after))) if retry_after else min(8.0, 2 ** attempt)
                 except (TypeError, ValueError):
                     delay = min(8.0, 2 ** attempt)
-                app.logger.warning(
-                    "ClickUp respondeu HTTP %s; nova tentativa em %.1fs (%s/%s).",
-                    response.status_code, delay, attempt + 1, MAX_RETRIES,
-                )
                 time.sleep(delay)
                 continue
             return _safe_json(response)
@@ -196,12 +168,7 @@ def _get_json(session, url, params=None):
             last_error = exc
             if attempt >= MAX_RETRIES - 1:
                 raise
-            delay = min(8.0, 2 ** attempt)
-            app.logger.warning(
-                "Falha temporária de rede com ClickUp (%s); nova tentativa em %ss (%s/%s).",
-                type(exc).__name__, delay, attempt + 1, MAX_RETRIES,
-            )
-            time.sleep(delay)
+            time.sleep(min(8.0, 2 ** attempt))
     if last_error:
         raise last_error
     raise requests.RequestException("Não foi possível consultar a API do ClickUp.")
@@ -235,9 +202,7 @@ def _space_name(task, spaces_by_id):
 
 
 def _cliente_value(task, cliente_options_by_field_id=None):
-    """Extrai Cliente resolvendo dropdown por ID, orderindex ou posição da opção."""
     cliente_options_by_field_id = cliente_options_by_field_id or {}
-
     direct = task.get("Cliente")
     if direct not in (None, ""):
         return str(direct).strip()
@@ -262,14 +227,11 @@ def _cliente_value(task, cliente_options_by_field_id=None):
             options = cliente_options_by_field_id.get(field_id, [])
 
         if isinstance(options, list):
-            # O ClickUp pode devolver o valor do dropdown como posição numérica.
             try:
                 numeric_value = int(value)
             except (TypeError, ValueError):
                 numeric_value = None
 
-            # Primeiro tenta o identificador explícito; depois orderindex;
-            # por último a posição da opção na lista.
             for option in options:
                 if not isinstance(option, dict):
                     continue
@@ -304,14 +266,8 @@ def _cliente_value(task, cliente_options_by_field_id=None):
             if resolved not in (None, ""):
                 return str(resolved).strip()
 
-        # Texto livre deve ser preservado. Um número sem correspondência em
-        # dropdown fica sem classificação, sem inventar nome de cliente.
         field_type = str(field.get("type") or "").casefold()
         if field_type in ("drop_down", "dropdown") and str(value).strip().isdigit():
-            app.logger.warning(
-                "Opção do campo Cliente não resolvida (field_id=%s, value=%s).",
-                field_id or "não informado", value,
-            )
             return ""
         return str(value).strip()
 
@@ -319,14 +275,12 @@ def _cliente_value(task, cliente_options_by_field_id=None):
 
 
 def _list_id_from_task(task):
-    """Obtém o ID da List de origem da tarefa."""
     list_obj = task.get("list") or {}
     value = list_obj.get("id") if isinstance(list_obj, dict) else list_obj
     return str(value) if value not in (None, "") else ""
 
 
 def _buscar_opcoes_cliente_lista(list_id, token):
-    """Consulta os metadados de uma List usando sessão própria da thread."""
     session = requests.Session()
     session.headers.update({"Authorization": token, "Accept": "application/json"})
     try:
@@ -349,7 +303,6 @@ def _buscar_opcoes_cliente_lista(list_id, token):
 
 
 def _carregar_opcoes_cliente_por_lista(session, list_ids):
-    """Carrega opções do campo Cliente em paralelo e reutiliza metadados recentes."""
     token = (os.getenv("CLICKUP_API_TOKEN") or "").strip()
     now = time.time()
     options_by_field_id = {}
@@ -366,7 +319,6 @@ def _carregar_opcoes_cliente_por_lista(session, list_ids):
     lists_ok = len(set(list_ids)) - len(lists_to_fetch)
     lists_failed = 0
     if lists_to_fetch:
-        # Limite conservador para acelerar metadados sem disparar excesso de chamadas.
         with ThreadPoolExecutor(max_workers=CLIENTE_FIELDS_MAX_WORKERS) as executor:
             futures = [executor.submit(_buscar_opcoes_cliente_lista, list_id, token)
                        for list_id in lists_to_fetch]
@@ -374,20 +326,12 @@ def _carregar_opcoes_cliente_por_lista(session, list_ids):
                 list_id, result, error = future.result()
                 if error:
                     lists_failed += 1
-                    app.logger.warning(
-                        "Não foi possível carregar campos personalizados da List %s (%s).",
-                        list_id, type(error).__name__,
-                    )
                     continue
                 lists_ok += 1
                 options_by_field_id.update(result)
                 with _cliente_fields_cache_lock:
                     _cliente_fields_cache[list_id] = (time.time(), result)
 
-    app.logger.info(
-        "Metadados do campo Cliente: %s Lists atendidas por cache/consulta, %s falhas, %s campos com opções.",
-        lists_ok, lists_failed, len(options_by_field_id),
-    )
     return options_by_field_id
 
 
@@ -403,13 +347,6 @@ def _is_inactive_status(status):
 
 
 def buscar_tarefas_clickup():
-    """Busca TODAS as páginas de tarefas abertas, independentemente da idade.
-
-    O filtro padrão de antiguidade é aplicado no dashboard. Assim, filtros por
-    data de criação podem consultar também tarefas com menos de 100 dias.
-    A função só retorna quando encontra uma página vazia; falhas não publicam
-    resultados parciais no cache.
-    """
     token = (os.getenv("CLICKUP_API_TOKEN") or "").strip()
     if not token:
         raise RuntimeError("O serviço ainda não foi configurado com CLICKUP_API_TOKEN no Render.")
@@ -433,8 +370,8 @@ def buscar_tarefas_clickup():
                 for space in spaces_payload.get("spaces", [])
                 if space.get("id") is not None and space.get("name")
             }
-        except (requests.RequestException, ValueError) as exc:
-            app.logger.warning("Não foi possível carregar a lista de Spaces: %s", type(exc).__name__)
+        except (requests.RequestException, ValueError):
+            pass
 
         collection_started = time.perf_counter()
         pagination_started = collection_started
@@ -445,11 +382,8 @@ def buscar_tarefas_clickup():
         seen_page_signatures = set()
         page = 0
         total_received = 0
-        app.logger.info("Iniciando busca completa de tarefas abertas no workspace %s.", team.get("id"))
 
         while True:
-            # A falha em uma página não reinicia a coleta desde a página zero.
-            # Repetimos a mesma página e mantemos o que já foi coletado em memória.
             page_error = None
             for page_attempt in range(PAGE_RETRIES):
                 try:
@@ -468,36 +402,19 @@ def buscar_tarefas_clickup():
                 except (requests.RequestException, ValueError) as exc:
                     page_error = exc
                     if page_attempt == PAGE_RETRIES - 1:
-                        app.logger.exception(
-                            "Falha persistente na página %s após %s tentativas; coleta interrompida sem substituir o cache.",
-                            page, PAGE_RETRIES,
-                        )
                         raise
-                    delay = min(30, 2 ** page_attempt)
-                    app.logger.warning(
-                        "Página %s falhou (%s/%s: %s); tentando a mesma página novamente em %ss.",
-                        page, page_attempt + 1, PAGE_RETRIES, type(exc).__name__, delay,
-                    )
-                    time.sleep(delay)
+                    time.sleep(min(30, 2 ** page_attempt))
             if page_error is not None:
                 raise page_error
 
             tasks = payload.get("tasks", [])
             if not tasks:
-                app.logger.info(
-                    "Busca completa finalizada: %s tarefas recebidas, %s tarefas abertas após exclusão de status inativos, %s páginas.",
-                    total_received, len(critical), page,
-                )
-                app.logger.info("Tempo de paginação do ClickUp: %.2fs.", time.perf_counter() - pagination_started)
                 break
 
-            # Protege contra uma API que, por erro, devolva indefinidamente a mesma página.
             page_ids = [str(t.get("id") or t.get("custom_id") or "") for t in tasks]
             signature = tuple(page_ids)
             if signature in seen_page_signatures:
-                raise RuntimeError(
-                    f"A API do ClickUp repetiu a página {page}; atualização cancelada para não publicar dados incompletos."
-                )
+                raise RuntimeError("A API do ClickUp repetiu a página; atualização cancelada.")
             seen_page_signatures.add(signature)
             total_received += len(tasks)
 
@@ -539,8 +456,6 @@ def buscar_tarefas_clickup():
                     if not name:
                         continue
                     name = str(name).strip()
-                    # O ID do ClickUp identifica a pessoa de forma estável,
-                    # mesmo quando o nome/e-mail exibido varia entre tarefas.
                     identity = assignee_id or name.casefold()
                     if identity in seen_assignees:
                         continue
@@ -562,55 +477,33 @@ def buscar_tarefas_clickup():
             page += 1
             with _progress_lock:
                 _progress.update(tasks=list(critical), page=page, received=total_received, active=True)
-            if page % 5 == 0:
-                app.logger.info(
-                    "Busca ClickUp em andamento: %s páginas consultadas; %s tarefas recebidas; %s tarefas críticas acumuladas.",
-                    page, total_received, len(critical),
-                )
-        metadata_started = time.perf_counter()
-        cliente_options_by_field_id = _carregar_opcoes_cliente_por_lista(
-            session, collected_list_ids
-        )
-        app.logger.info("Tempo de metadados de Cliente: %.2fs.", time.perf_counter() - metadata_started)
+
+        cliente_options_by_field_id = _carregar_opcoes_cliente_por_lista(session, collected_list_ids)
         for item in critical:
             task_payload = item.pop("_cliente_task", {})
-            item["cliente"] = _cliente_value(
-                task_payload, cliente_options_by_field_id
-            )
+            item["cliente"] = _cliente_value(task_payload, cliente_options_by_field_id)
 
-        app.logger.info(
-            "Tempo total da coleta ClickUp (sem persistência Supabase): %.2fs; tarefas abertas: %s.",
-            time.perf_counter() - collection_started, len(critical),
-        )
         return critical
     finally:
         session.close()
 
 
 def _refresh_worker():
-    """Atualiza em segundo plano e só troca o cache após uma busca completa."""
     global _refresh_thread, _refreshing, _last_refresh_error
     with _progress_lock:
         _progress.update(tasks=[], page=0, received=0, active=True)
     try:
         tasks = buscar_tarefas_clickup()
         updated_at = datetime.now(timezone.utc).isoformat()
-        # A coleta só é publicada após terminar todas as páginas. O banco é atualizado
-        # antes do cache em memória para manter o último snapshot persistido íntegro.
-        persistence_started = time.perf_counter()
         try:
             salvar_cache_supabase(tasks, updated_at)
-            app.logger.info("Tempo de persistência no Supabase: %.2fs.", time.perf_counter() - persistence_started)
-        except Exception as db_exc:
-            # O dashboard continua funcional mesmo se o Supabase estiver temporariamente indisponível.
-            app.logger.exception("Falha ao persistir cache no Supabase após %.2fs; mantendo cache em memória.", time.perf_counter() - persistence_started)
+        except Exception:
+            pass
         with _cache_lock:
             _cache.update(at=time.time(), tasks=tasks, updated_at=updated_at)
         _last_refresh_error = None
-        app.logger.info("Cache atualizado com %s tarefas após coleta completa.", len(tasks))
     except Exception as exc:
         _last_refresh_error = type(exc).__name__
-        app.logger.exception("Atualização completa do ClickUp falhou; cache anterior foi preservado.")
     finally:
         with _progress_lock:
             _progress["active"] = False
@@ -620,7 +513,6 @@ def _refresh_worker():
 
 
 def iniciar_atualizacao(force=False):
-    """Inicia no máximo uma atualização; retorna imediatamente ao navegador."""
     global _refresh_thread, _refreshing, _last_refresh_error
     with _refresh_lock:
         now = time.time()
@@ -638,7 +530,6 @@ def iniciar_atualizacao(force=False):
         return True
 
 
-# Estado em memória do processo. Uma reinicialização provoca nova busca completa.
 _refresh_lock = threading.Lock()
 _refreshing = False
 _refresh_thread = None
@@ -679,7 +570,6 @@ def api_tasks():
         "tasks": tasks or [],
         "updated_at": updated_at,
         "cached": tasks is not None,
-        # complete descreve o cache servido, não a coleta que está em andamento.
         "complete": tasks is not None,
         "refreshing": refreshing,
         "last_refresh_error": _last_refresh_error,
@@ -691,25 +581,16 @@ def api_tasks():
             "critical_accumulated": len(_progress["tasks"]),
         }
     if _last_refresh_error and tasks is None and not refreshing:
-        payload["error"] = (
-            "Não foi possível concluir a busca completa no ClickUp. Nenhum resultado parcial foi marcado como completo. "
-            "Consulte os logs do Render e tente atualizar novamente."
-        )
+        payload["error"] = "Não foi possível concluir a busca completa no ClickUp."
         return jsonify(payload), 502
-    if _last_refresh_error and tasks is not None:
-        payload["warning"] = (
-            "A última atualização falhou; os dados completos do cache anterior continuam disponíveis."
-        )
     return jsonify(payload), 200
 
 
 @app.post("/api/refresh")
 def scheduled_refresh():
-    """Endpoint protegido para iniciar a atualização agendada pelo GitHub Actions."""
     expected = (os.getenv("CRON_SECRET") or "").strip()
     supplied = (request.headers.get("X-Cron-Secret") or "").strip()
     if not expected:
-        app.logger.error("CRON_SECRET não está configurado; atualização agendada recusada.")
         return jsonify({"ok": False, "error": "Agendamento não configurado no servidor."}), 503
     if not supplied or not hmac.compare_digest(supplied, expected):
         return jsonify({"ok": False, "error": "Não autorizado."}), 401
@@ -719,9 +600,9 @@ def scheduled_refresh():
     with _refresh_lock:
         refreshing = _refreshing
     if started:
-        return jsonify({"ok": True, "started": True, "message": "Atualização completa iniciada em segundo plano."}), 202
+        return jsonify({"ok": True, "started": True, "message": "Atualização iniciada em segundo plano."}), 202
     if refreshing:
-        return jsonify({"ok": True, "started": False, "message": "Já existe uma atualização em andamento."}), 200
+        return jsonify({"ok": True, "started": False, "message": "Atualização já em andamento."}), 200
     return jsonify({"ok": False, "error": "Não foi possível iniciar a atualização."}), 500
 
 
@@ -752,63 +633,58 @@ def export_xlsx():
         "ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
         "Espaço do ClickUp", "Cliente", "Data de criação", "Link ClickUp",
     ]
-    if "detalhamento" in selected_reports:
-        fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
+    fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
 
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Detalhamento das Tarefas"
-        sheet.append(headers)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Detalhamento das Tarefas"
+    sheet.append(headers)
 
-        for cell in sheet[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="334155")
-            cell.alignment = Alignment(vertical="center", wrap_text=True)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="334155")
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-        def safe_cell(value):
-            if value is None:
-                return ""
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                return value
-            value = str(value)
-            # Mitiga fórmulas maliciosas em valores exportados.
-            return "'" + value if value.startswith(("=", "+", "-", "@")) else value
+    def safe_cell(value):
+        if value is None:
+            return ""
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+        value = str(value)
+        return "'" + value if value.startswith(("=", "+", "-", "@")) else value
 
-        for item in rows:
-            if not isinstance(item, dict):
-                continue
-            values = [safe_cell(item.get(field, "")) for field in fields]
-            url = str(item.get("url") or "")
-            if not (
-                url.startswith("https://app.clickup.com/")
-                or url.startswith("https://sharing.clickup.com/")
-            ):
-                values[-1] = ""
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        values = [safe_cell(item.get(field, "")) for field in fields]
+        url = str(item.get("url") or "")
+        if not (
+            url.startswith("https://app.clickup.com/")
+            or url.startswith("https://sharing.clickup.com/")
+        ):
+            values[-1] = ""
 
-            sheet.append(values)
-            link = sheet.cell(row=sheet.max_row, column=9)
-            if values[-1]:
-                link.hyperlink = values[-1]
-                link.style = "Hyperlink"
+        sheet.append(values)
+        link = sheet.cell(row=sheet.max_row, column=9)
+        if values[-1]:
+            link.hyperlink = values[-1]
+            link.style = "Hyperlink"
 
-            days_cell = sheet.cell(row=sheet.max_row, column=4)
-            if isinstance(days_cell.value, (int, float)):
-                days_cell.number_format = '0 "dias"'
+        days_cell = sheet.cell(row=sheet.max_row, column=4)
+        if isinstance(days_cell.value, (int, float)):
+            days_cell.number_format = '0 "dias"'
 
-        sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = sheet.dimensions
-        sheet.row_dimensions[1].height = 30
-        for index, width in enumerate([18, 55, 22, 18, 32, 32, 24, 18, 48], start=1):
-            sheet.column_dimensions[get_column_letter(index)].width = width
-        for row in sheet.iter_rows(min_row=2):
-            for cell in row:
-                cell.alignment = Alignment(
-                    vertical="top",
-                    wrap_text=(cell.column == 2),
-                )
-
-    if not workbook.sheetnames:
-        return jsonify({"error": "Nenhuma aba foi gerada. Confira os relatórios selecionados."}), 400
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.row_dimensions[1].height = 30
+    for index, width in enumerate([18, 55, 22, 18, 32, 32, 24, 18, 48], start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(
+                vertical="top",
+                wrap_text=(cell.column == 2),
+            )
 
     output = BytesIO()
     workbook.save(output)
@@ -842,7 +718,7 @@ def export_relatorios_xlsx():
     }
     requested_reports = payload.get("reports")
     if requested_reports is None:
-        selected_reports = set(available_reports)  # Compatibilidade com chamadas antigas.
+        selected_reports = set(available_reports)
     elif not isinstance(requested_reports, list) or not requested_reports:
         return jsonify({"error": "Selecione pelo menos um relatório para exportação."}), 400
     else:
@@ -927,9 +803,7 @@ def export_relatorios_xlsx():
 
     def unique_detail_title(prefix, value):
         raw = f"{prefix} - {value}"
-        # O Excel proíbe : \\ / ? * [ ] em nomes de abas.
-        # Também removemos caracteres de controle e limitamos o nome a 31 caracteres.
-        invalid_sheet_chars = set('\\\\/:*?[]')
+        invalid_sheet_chars = set('\\/:*?[]')
         cleaned = "".join(
             "-" if char in invalid_sheet_chars or ord(char) < 32 else char
             for char in raw
@@ -971,13 +845,6 @@ def export_relatorios_xlsx():
             link_cell.hyperlink = f"#'{detail_title}'!A1"
             link_cell.style = "Hyperlink"
         return sheet
-
-    def group_summary(group):
-        result = []
-        for name, items in sorted(group.items(), key=lambda pair: (-len(pair[1]), pair[0].casefold())):
-            ages = [age(item) for item in items]
-            result.append([name, len(items), round(sum(ages) / len(ages)), max(ages)])
-        return result
 
     total = len(valid_rows)
     all_ages = [age(item) for item in valid_rows]
@@ -1056,7 +923,6 @@ def export_relatorios_xlsx():
                          groups["status"], [32, 16, 18, 20])
 
     if "tipo" in selected_reports:
-        # A nova aba compara as mesmas duas categorias usadas no resumo.
         type_groups = {
             "Demandas internas": internal_rows,
             "Solicitações de clientes": client_rows,
@@ -1088,40 +954,6 @@ def export_relatorios_xlsx():
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
-
-
-@app.get("/health/cache")
-def health_cache():
-    """Diagnóstico seguro de cache; não retorna tarefas nem dados de conexão."""
-    with _cache_lock:
-        has_cache = _cache["tasks"] is not None
-        task_count = len(_cache["tasks"] or [])
-        updated_at = _cache["updated_at"]
-    db_configured = bool(_database_url())
-    db_available = False
-    if db_configured:
-        conn = None
-        try:
-            conn = _db_connect()
-            with conn.cursor() as cur:
-                cur.execute("SELECT complete, updated_at, jsonb_array_length(tasks) FROM public.clickup_dashboard_cache WHERE id = 1")
-                row = cur.fetchone()
-            db_available = True
-            db_info = {"record_exists": row is not None, "complete": bool(row[0]) if row else False,
-                       "updated_at": row[1].isoformat() if row and row[1] else None,
-                       "task_count": row[2] if row else 0}
-        except Exception as exc:
-            db_info = {"error_type": type(exc).__name__}
-        finally:
-            if conn is not None:
-                conn.close()
-    else:
-        db_info = {"configured": False}
-    with _refresh_lock:
-        refreshing = _refresh_refreshing if '_refresh_refreshing' in globals() else _refreshing
-    return jsonify({"memory_cache": {"available": has_cache, "task_count": task_count, "updated_at": updated_at},
-                    "supabase": {"configured": db_configured, "available": db_available, **db_info},
-                    "refreshing": refreshing, "last_refresh_error": _last_refresh_error})
 
 
 if __name__ == "__main__":
