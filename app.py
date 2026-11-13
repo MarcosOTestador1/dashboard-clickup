@@ -833,6 +833,7 @@ def export_relatorios_xlsx():
         ws.sheet_view.showGridLines = False
         ws.sheet_properties.tabColor = tab_color
         ws.sheet_properties.outlinePr = Outline(summaryBelow=False)
+        ws.sheet_format.outlineLevelRow = 1  # sem isto o Excel não mostra os botões − / + à esquerda
         ws.page_setup.orientation = "landscape"
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0
