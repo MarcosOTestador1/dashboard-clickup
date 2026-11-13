@@ -524,11 +524,29 @@ def buscar_tarefas_clickup():
                     continue
                 days = max(0, (now - created).days)
                 responsible_names = []
+                responsible_people = []
+                seen_assignees = set()
                 for assignee in (task.get("assignees") or []):
-                    if isinstance(assignee, dict):
-                        name = assignee.get("username") or assignee.get("email") or assignee.get("initials")
-                        if name:
-                            responsible_names.append(str(name))
+                    if not isinstance(assignee, dict):
+                        continue
+                    assignee_id = str(assignee.get("id") or "").strip()
+                    name = (
+                        assignee.get("username")
+                        or assignee.get("email")
+                        or assignee.get("initials")
+                        or assignee_id
+                    )
+                    if not name:
+                        continue
+                    name = str(name).strip()
+                    # O ID do ClickUp identifica a pessoa de forma estável,
+                    # mesmo quando o nome/e-mail exibido varia entre tarefas.
+                    identity = assignee_id or name.casefold()
+                    if identity in seen_assignees:
+                        continue
+                    seen_assignees.add(identity)
+                    responsible_names.append(name)
+                    responsible_people.append({"id": assignee_id, "name": name})
                 critical.append({
                     "id": str(task.get("custom_id") or task.get("id") or ""),
                     "name": str(task.get("name") or "Sem título"),
@@ -536,6 +554,7 @@ def buscar_tarefas_clickup():
                     "dias": days,
                     "criacao": created.strftime("%Y-%m-%d"),
                     "responsavel": ", ".join(responsible_names) or "Não atribuído",
+                    "responsaveis": responsible_people or [{"id": "", "name": "Não atribuído"}],
                     "espaco": _space_name(task, spaces_by_id),
                     "_cliente_task": task,
                     "url": str(task.get("url") or "#"),
