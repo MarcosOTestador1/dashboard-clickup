@@ -432,50 +432,6 @@
     document.querySelectorAll('[data-sort-indicator]').forEach(span => span.textContent = span.dataset.sortIndicator === sortField ? (sortDirection === 'asc' ? '↑' : '↓') : '↕');
   }
 
-  function renderizarRankingResponsaveis(tasks) {
-    const responsaveis = new Map();
-    tasks.forEach(t => {
-      const owner = t.responsavel || 'Não atribuído';
-      responsaveis.set(owner, (responsaveis.get(owner) || 0) + 1);
-    });
-    const ownerRows = [...responsaveis.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'pt-BR'))
-      .slice(0, 10);
-
-    if (chartResponsaveis) chartResponsaveis.destroy();
-    const canvas = el('graficoResponsaveis');
-    if (!canvas) return;
-
-    chartResponsaveis = new Chart(canvas.getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels: ownerRows.map(x => x[0]),
-        datasets: [{
-          label: 'Tarefas críticas',
-          data: ownerRows.map(x => x[1]),
-          backgroundColor: '#10b981',
-          borderRadius: 4
-        }]
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        onClick: (_event, elements) => {
-          if (elements.length) aplicarFiltroGrafico('responsavel', ownerRows[elements[0].index]?.[0] || '');
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { label: ctx => `${ctx.raw} tarefas` } }
-        },
-        scales: {
-          x: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 }, grid: { color: '#374151' } },
-          y: { ticks: { color: '#d1d5db', autoSkip: false }, grid: { display: false } }
-        }
-      }
-    });
-  }
-
   function aplicarFiltroGrafico(tipo, valor) {
     // Um clique no gráfico passa a mostrar exatamente o conjunto daquele segmento.
     ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => { el(id).value = ''; });
@@ -490,19 +446,35 @@
     }
     if (tipo === 'responsavel') el('filtroResponsavel').value = valor;
     if (tipo === 'status') el('filtroStatus').value = valor;
-
-    // O Top 10 acompanha somente a seleção feita no comparativo por tipo.
-    // Cliques nos demais gráficos mantêm o comportamento geral do ranking.
+    // O ranking acompanha a categoria escolhida no gráfico de tipo de demanda.
+    // Para os demais tipos de clique, volta a considerar todas as tarefas do filtro global.
     const tarefasDoRanking = chartClientFilter
       ? tarefasCriticas.filter(t => classificarCliente(t.cliente) === chartClientFilter)
       : tarefasCriticas;
-    renderizarRankingResponsaveis(tarefasDoRanking);
+    atualizarRankingResponsaveis(tarefasDoRanking);
     preencherTabela();
     const descricaoFiltro = tipo === 'solicitacoes_espaco' ? 'solicitações de clientes no espaço' :
       tipo === 'espaco' ? 'espaço' : tipo === 'responsavel' ? 'responsável' :
       tipo === 'cliente' ? 'categoria de cliente' : 'status';
     mostrarMensagem(`Exibindo tarefas de ${descricaoFiltro}: ${valor}. Use “Limpar filtros” para voltar à lista completa.`);
     el('detalhamentoTitulo').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function atualizarRankingResponsaveis(tasks) {
+    const responsaveis = new Map();
+    tasks.forEach(t => {
+      const owner = t.responsavel || 'Não atribuído';
+      responsaveis.set(owner, (responsaveis.get(owner) || 0) + 1);
+    });
+    const ownerRows = [...responsaveis.entries()]
+      .sort((a,b) => b[1] - a[1])
+      .slice(0, 10);
+
+    if (chartResponsaveis) {
+      chartResponsaveis.data.labels = ownerRows.map(x => x[0]);
+      chartResponsaveis.data.datasets[0].data = ownerRows.map(x => x[1]);
+      chartResponsaveis.update();
+    }
   }
 
   function renderizarGraficos(tasks) {
@@ -522,6 +494,7 @@
       }
     });
     const spaceRows = [...espacos.entries()].sort((a,b) => b[1] - a[1]);
+    const ownerRows = [...responsaveis.entries()].sort((a,b) => b[1] - a[1]).slice(0, 10);
     const statusRows = [...statusMap.entries()].sort((a,b) => b[1] - a[1]);
     const clientRows = [...clientes.entries()];
     const clientSpaceRows = [...solicitacoesPorEspaco.entries()].sort((a,b) => b[1] - a[1]);
@@ -546,7 +519,13 @@
         onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('espaco', spaceRows[elements[0].index]?.[0] || ''); },
         plugins: commonPlugins, scales: commonScales }
     });
-    renderizarRankingResponsaveis(tasks);
+    chartResponsaveis = new Chart(el('graficoResponsaveis').getContext('2d'), {
+      type: 'bar',
+      data: { labels: ownerRows.map(x => x[0]), datasets: [{ label: 'Tarefas críticas', data: ownerRows.map(x => x[1]), backgroundColor: '#10b981', borderRadius: 4 }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        onClick: (_event, elements) => { if (elements.length) aplicarFiltroGrafico('responsavel', ownerRows[elements[0].index]?.[0] || ''); },
+        plugins: commonPlugins, scales: commonScales }
+    });
     chartSolicitacoesEspaco = new Chart(el('graficoSolicitacoesEspaco').getContext('2d'), {
       type: 'bar',
       data: { labels: clientSpaceRows.map(x => x[0]), datasets: [{
@@ -774,11 +753,7 @@
   }));
   el('limparFiltros').addEventListener('click', () => {
     ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => el(id).value = '');
-    chartSpaceFilter = '';
-    chartClientFilter = null;
-    renderizarRankingResponsaveis(tarefasCriticas);
-    preencherTabela();
-    ocultarMensagem();
+    chartSpaceFilter = ''; preencherTabela(); ocultarMensagem();
   });
 
   el('exportarXlsx').addEventListener('click', async () => {
