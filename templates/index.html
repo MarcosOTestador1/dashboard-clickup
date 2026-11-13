@@ -435,7 +435,8 @@
     // Ao clicar em um responsável, mantém a categoria (internas/clientes) ativa,
     // para que o número do gráfico seja o mesmo da tabela.
     const categoriaAtiva = chartClientFilter;
-    chartSpaceFilter = '';
+    const espacoAtivo = chartSpaceFilter;
+    chartSpaceFilter = tipo === 'responsavel' ? espacoAtivo : '';
     chartClientFilter = tipo === 'responsavel' ? categoriaAtiva : null;
     if (tipo === 'cliente') chartClientFilter = valor;
     if (tipo === 'espaco') { el('filtroEspaco').value = valor; chartSpaceFilter = valor; }
@@ -444,21 +445,33 @@
       el('filtroEspaco').value = valor;
       chartSpaceFilter = valor;
     }
-    if (tipo === 'responsavel') el('filtroResponsavel').value = valor;
+    if (tipo === 'responsavel') {
+      el('filtroResponsavel').value = valor;
+      if (espacoAtivo) el('filtroEspaco').value = espacoAtivo;
+    }
     if (tipo === 'status') el('filtroStatus').value = valor;
 
-    const tarefasDoRanking = chartClientFilter
-      ? tarefasCriticas.filter(t => classificarCliente(t.cliente) === chartClientFilter)
-      : tarefasCriticas;
-    atualizarRankingResponsaveis(tarefasDoRanking);
+    atualizarRankingPeloContexto();
     preencherTabela();
     const descricaoFiltro = tipo === 'solicitacoes_espaco' ? 'solicitações de clientes no espaço' :
       tipo === 'espaco' ? 'espaço' : tipo === 'responsavel' ? 'responsável' :
       tipo === 'cliente' ? 'categoria de cliente' : 'status';
-    const complemento = (tipo === 'responsavel' && chartClientFilter)
-      ? ` (${chartClientFilter.toLocaleLowerCase('pt-BR')})` : '';
+    const partes = [];
+    if (tipo === 'responsavel') {
+      if (chartClientFilter) partes.push(chartClientFilter.toLocaleLowerCase('pt-BR'));
+      if (chartSpaceFilter) partes.push(`espaço ${chartSpaceFilter}`);
+    }
+    const complemento = partes.length ? ` (${partes.join(', ')})` : '';
     mostrarMensagem(`Exibindo tarefas de ${descricaoFiltro}: ${valor}${complemento}. Use “Limpar filtros” para voltar à lista completa.`);
     el('detalhamentoTitulo').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // Ranking de responsáveis conforme a categoria (internas/clientes) e o espaço clicados nos gráficos.
+  function atualizarRankingPeloContexto() {
+    const base = tarefasCriticas.filter(t =>
+      (!chartClientFilter || classificarCliente(t.cliente) === chartClientFilter) &&
+      (!chartSpaceFilter || t.espaco === chartSpaceFilter));
+    atualizarRankingResponsaveis(base);
   }
 
   function atualizarRankingResponsaveis(tasks) {
@@ -693,8 +706,8 @@
   }
 
   ['filtroGeral' ,'filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => {
-    el(id).addEventListener('input', () => { if (id === 'filtroEspaco') chartSpaceFilter = ''; preencherTabela(); });
-    el(id).addEventListener('change', () => { if (id === 'filtroEspaco') chartSpaceFilter = ''; preencherTabela(); });
+    el(id).addEventListener('input', () => { if (id === 'filtroEspaco') { chartSpaceFilter = ''; atualizarRankingPeloContexto(); } preencherTabela(); });
+    el(id).addEventListener('change', () => { if (id === 'filtroEspaco') { chartSpaceFilter = ''; atualizarRankingPeloContexto(); } preencherTabela(); });
   });
   ['filtroGlobalDias','filtroGlobalCriacaoDe','filtroGlobalCriacaoAte'].forEach(id => {
     el(id).addEventListener('input', atualizarVisaoGlobal);
