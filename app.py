@@ -724,8 +724,6 @@ def export_xlsx():
         return jsonify({
             "error": "Não foi possível identificar as tarefas para exportação."
         }), 400
-    if not rows:
-        return jsonify({"error": "Não há tarefas para exportar com os filtros atuais."}), 400
     if len(rows) > 20000:
         return jsonify({
             "error": "A seleção excede o limite de 20.000 tarefas por exportação."
@@ -735,59 +733,63 @@ def export_xlsx():
         "ID", "Nome da tarefa", "Status", "Dias em aberto", "Responsável",
         "Espaço do ClickUp", "Cliente", "Data de criação", "Link ClickUp",
     ]
-    fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
+    if "detalhamento" in selected_reports:
+        fields = ["id", "name", "status", "dias", "responsavel", "espaco", "cliente", "criacao", "url"]
 
-    def safe_cell(value):
-        if value is None:
-            return ""
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return value
-        value = str(value)
-        # Evita que valores iniciados por caracteres de fórmula sejam executados no Excel.
-        return "'" + value if value.startswith(("=", "+", "-", "@")) else value
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Detalhamento das Tarefas"
+        sheet.append(headers)
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Detalhamento das Tarefas"
-    sheet.append(headers)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="334155")
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-    for cell in sheet[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="334155")
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        def safe_cell(value):
+            if value is None:
+                return ""
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return value
+            value = str(value)
+            # Mitiga fórmulas maliciosas em valores exportados.
+            return "'" + value if value.startswith(("=", "+", "-", "@")) else value
 
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        values = [safe_cell(item.get(field, "")) for field in fields]
-        url = str(item.get("url") or "")
-        if not (
-            url.startswith("https://app.clickup.com/")
-            or url.startswith("https://sharing.clickup.com/")
-        ):
-            values[-1] = ""
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            values = [safe_cell(item.get(field, "")) for field in fields]
+            url = str(item.get("url") or "")
+            if not (
+                url.startswith("https://app.clickup.com/")
+                or url.startswith("https://sharing.clickup.com/")
+            ):
+                values[-1] = ""
 
-        sheet.append(values)
-        link = sheet.cell(row=sheet.max_row, column=9)
-        if values[-1]:
-            link.hyperlink = values[-1]
-            link.style = "Hyperlink"
+            sheet.append(values)
+            link = sheet.cell(row=sheet.max_row, column=9)
+            if values[-1]:
+                link.hyperlink = values[-1]
+                link.style = "Hyperlink"
 
-        days_cell = sheet.cell(row=sheet.max_row, column=4)
-        if isinstance(days_cell.value, (int, float)):
-            days_cell.number_format = '0 "dias"'
+            days_cell = sheet.cell(row=sheet.max_row, column=4)
+            if isinstance(days_cell.value, (int, float)):
+                days_cell.number_format = '0 "dias"'
 
-    if sheet.max_row == 1:
-        return jsonify({"error": "Nenhuma tarefa válida foi encontrada para exportação."}), 400
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        sheet.row_dimensions[1].height = 30
+        for index, width in enumerate([18, 55, 22, 18, 32, 32, 24, 18, 48], start=1):
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(
+                    vertical="top",
+                    wrap_text=(cell.column == 2),
+                )
 
-    sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = sheet.dimensions
-    sheet.row_dimensions[1].height = 30
-    for index, width in enumerate([18, 55, 22, 18, 32, 32, 24, 18, 48], start=1):
-        sheet.column_dimensions[get_column_letter(index)].width = width
-    for row in sheet.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = Alignment(vertical="top", wrap_text=(cell.column == 2))
+    if not workbook.sheetnames:
+        return jsonify({"error": "Nenhuma aba foi gerada. Confira os relatórios selecionados."}), 400
 
     output = BytesIO()
     workbook.save(output)
