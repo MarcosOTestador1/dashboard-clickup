@@ -708,7 +708,6 @@ def export_relatorios_xlsx():
         from openpyxl.utils import get_column_letter
         from openpyxl.worksheet.properties import Outline
         from openpyxl.worksheet.table import Table, TableStyleInfo
-        from copy import copy
     except ImportError:
         return jsonify({"error": "Exportação XLSX indisponível: dependência openpyxl não instalada."}), 503
 
@@ -826,27 +825,6 @@ def export_relatorios_xlsx():
     workbook = Workbook()
     workbook.remove(workbook.active)
     sheet_titles = {}
-
-    # Estilos pré-calculados: aplicar Font/Border/Alignment célula a célula é o que mais pesa na geração.
-    # Montamos cada combinação uma única vez numa aba temporária e só copiamos o índice de estilo.
-    scratch = workbook.create_sheet("_estilos")
-
-    def make_style(font=None, border=None, alignment=None, number_format=None):
-        probe = scratch.cell(row=scratch.max_row + 1, column=1, value="x")
-        if font:
-            probe.font = font
-        if border:
-            probe.border = border
-        if alignment:
-            probe.alignment = alignment
-        if number_format:
-            probe.number_format = number_format
-        return copy(probe._style)
-
-    st_task = make_style(f_body, border_bottom, a_top)
-    st_wrap = make_style(f_body, border_bottom, a_wrap)
-    st_days = make_style(f_body, border_bottom, Alignment(horizontal="center", vertical="top"), '0 "dias"')
-    st_link = make_style(f_link, border_bottom, a_top)
     has_summary = "resumo" in selected_reports
 
     def new_sheet(key, title, subtitle, tab_color="3B82F6"):
@@ -855,7 +833,6 @@ def export_relatorios_xlsx():
         ws.sheet_view.showGridLines = False
         ws.sheet_properties.tabColor = tab_color
         ws.sheet_properties.outlinePr = Outline(summaryBelow=False)
-        ws.sheet_format.outlineLevelRow = 1  # sem isto o Excel não mostra os botões − / + à esquerda
         ws.page_setup.orientation = "landscape"
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0
@@ -887,15 +864,19 @@ def export_relatorios_xlsx():
                   item.get("criacao", "")]
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row, column=col, value=safe_cell(value))
-            cell._style = copy(st_wrap if col == 2 else st_days if col == 4 else st_task)
+            cell.font = f_body
+            cell.alignment = a_wrap if col == 2 else a_top
+            cell.border = border_bottom
+        ws.cell(row=row, column=4).number_format = '0 "dias"'
+        ws.cell(row=row, column=4).alignment = Alignment(horizontal="center", vertical="top")
         link_cell = ws.cell(row=row, column=9)
+        link_cell.border = border_bottom
         url = valid_link(item.get("url"))
         if url:
             link_cell.value = link_text if link_text else url
             link_cell.hyperlink = url
-            link_cell._style = copy(st_link)
-        else:
-            link_cell._style = copy(st_task)
+            link_cell.font = f_link
+        link_cell.alignment = a_top
 
     def build_report(key, title, group_label, grouped, kpis=None, subtitle_extra=""):
         """Resumo no topo (com 'Ver demandas') + blocos de tarefas recolhíveis logo abaixo."""
@@ -1074,8 +1055,6 @@ def export_relatorios_xlsx():
             ws.add_table(table)
         ws.freeze_panes = "A2"
         descriptions["detalhamento"] = "Base completa em tabela do Excel (filtros prontos; serve para criar tabelas dinâmicas)."
-
-    workbook.remove(scratch)
 
     # ---------- Resumo (primeira aba) com índice ----------
     if has_summary:
