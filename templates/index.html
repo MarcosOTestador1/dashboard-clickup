@@ -432,8 +432,11 @@
 
   function aplicarFiltroGrafico(tipo, valor) {
     ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => { el(id).value = ''; });
+    // Ao clicar em um responsável, mantém a categoria (internas/clientes) ativa,
+    // para que o número do gráfico seja o mesmo da tabela.
+    const categoriaAtiva = chartClientFilter;
     chartSpaceFilter = '';
-    chartClientFilter = null;
+    chartClientFilter = tipo === 'responsavel' ? categoriaAtiva : null;
     if (tipo === 'cliente') chartClientFilter = valor;
     if (tipo === 'espaco') { el('filtroEspaco').value = valor; chartSpaceFilter = valor; }
     if (tipo === 'solicitacoes_espaco') {
@@ -452,7 +455,9 @@
     const descricaoFiltro = tipo === 'solicitacoes_espaco' ? 'solicitações de clientes no espaço' :
       tipo === 'espaco' ? 'espaço' : tipo === 'responsavel' ? 'responsável' :
       tipo === 'cliente' ? 'categoria de cliente' : 'status';
-    mostrarMensagem(`Exibindo tarefas de ${descricaoFiltro}: ${valor}. Use “Limpar filtros” para voltar à lista completa.`);
+    const complemento = (tipo === 'responsavel' && chartClientFilter)
+      ? ` (${chartClientFilter.toLocaleLowerCase('pt-BR')})` : '';
+    mostrarMensagem(`Exibindo tarefas de ${descricaoFiltro}: ${valor}${complemento}. Use “Limpar filtros” para voltar à lista completa.`);
     el('detalhamentoTitulo').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -495,6 +500,7 @@
     const clientRows = [...clientes.entries()];
     const clientSpaceRows = [...solicitacoesPorEspaco.entries()].sort((a,b) => b[1] - a[1]);
     [chartEspacos, chartResponsaveis, chartStatus, chartClientes, chartSolicitacoesEspaco].forEach(chart => { if (chart) chart.destroy(); });
+    el('graficoStatus').parentElement.style.height = `${Math.max(288, statusRows.length * 22 + 60)}px`;
     const commonScales = {
       x: { beginAtZero: true, ticks: { color: '#d1d5db', precision: 0 }, grid: { color: '#374151' } },
       y: { ticks: { color: '#d1d5db', autoSkip: false }, grid: { display: false } }
@@ -745,7 +751,10 @@
   }));
   el('limparFiltros').addEventListener('click', () => {
     ['filtroGeral','filtroId','filtroNome','filtroStatus','filtroResponsavel','filtroEspaco','filtroDiasMin','filtroDiasMax','filtroCriacaoDe','filtroCriacaoAte'].forEach(id => el(id).value = '');
-    chartSpaceFilter = ''; preencherTabela(); ocultarMensagem();
+    chartSpaceFilter = '';
+    chartClientFilter = null;
+    atualizarRankingResponsaveis(tarefasCriticas);
+    preencherTabela(); ocultarMensagem();
   });
 
   el('exportarXlsx').addEventListener('click', async () => {
